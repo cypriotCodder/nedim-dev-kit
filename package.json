@@ -4,6 +4,7 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\""
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:install-ts": "npm i --no-save --no-package-lock ts55@npm:typescript@5.5 ts59@npm:typescript@5.9 ts70@npm:typescript@7.0"
   }
 }

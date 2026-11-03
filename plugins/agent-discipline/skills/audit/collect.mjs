@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, extname, resolve } from "node:path";
+import { countTypeErrors, detectPackageManager, readJsonc, runTool, runTypecheck, testCommand } from "./lib/project.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv.splice(i, 2)[1] : d; };
@@ -34,15 +35,20 @@ const run = (cmd, args, { timeout = 240000, cwd = root } = {}) => {
 const save = (name, text) => writeFileSync(join(out, name), text ?? "");
 const tool = (name, fn) => {
   const t0 = Date.now();
-  try { const res = fn(); summary.tools[name] = { ...(res || {}), ms: Date.now() - t0 }; }
-  catch (e) { summary.tools[name] = { error: String(e).slice(0, 300) }; }
+  try {
+    const res = fn() || {};
+    summary.tools[name] = { ...res, ...(res.skipped ? { status: "skipped" } : {}), ms: Date.now() - t0 };
+  } catch (e) { summary.tools[name] = { status: "failed", error: String(e).slice(0, 300) }; }
 };
+// Tools a gate can't pass without: if one of these breaks, the gate has no evidence to pass on.
+const GATE_REQUIRED = ["typecheck"];
 const onPath = (n) => spawnSync("sh", ["-c", `command -v ${n}`]).status === 0;
 const npx = (pkg, args, o) => run("npx", ["--yes", pkg, ...args], o);
 
 // ---------- Inventory ----------
 let pkg = {};
 try { pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")); } catch {}
+const pm = detectPackageManager(root, pkg);
 const isGit = run("git", ["rev-parse", "--is-inside-work-tree"]).code === 0;
 const SRC_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".cs", ".cpp", ".hpp", ".c", ".h"]);
 const IGNORE = /(^|\/)(node_modules|dist|build|out|\.next|\.nuxt|\.turbo|coverage|\.git|\.audit|vendor|target|bin|obj|\.expo|\.venv|venv|__pycache__)(\/|$)/;
@@ -80,26 +86,30 @@ save("inventory.json", JSON.stringify(summary.metrics.inventory, null, 2));
 // ---------- Type safety ----------
 tool("typecheck", () => {
   if (!existsSync(join(root, "tsconfig.json"))) return { skipped: "no tsconfig" };
-  const r = pkg.scripts?.typecheck ? run("npm", ["run", "-s", "typecheck"]) : existsSync(bin("tsc")) ? run(bin("tsc"), ["--noEmit", "--pretty", "false"]) : null;
-  if (!r) return { skipped: "typescript not installed" };
-  save("typecheck.txt", r.out);
-  const errors = (r.out.match(/error TS\d+/g) || []).length;
-  summary.metrics.typeErrors = errors;
-  let strict = null;
-  try { strict = /"strict"\s*:\s*true/.test(readFileSync(join(root, "tsconfig.json"), "utf8")); } catch {}
-  summary.metrics.tsStrict = strict;
-  return { code: r.code, errors };
+  const r = runTypecheck(root, { timeoutMs: 240000, env: { CI: "1" } });
+  if (r.status === "skipped") return { skipped: r.reason };
+  save("typecheck.txt", r.output);
+  const errors = countTypeErrors(r.output);
+  // A non-zero script with no recognisable errors can't be scored as zero errors.
+  const unreadable = r.findings && errors === 0;
+  const status = unreadable ? "failed" : r.status;
+  summary.metrics.typeErrors = errors > 0 ? errors : status === "ok" ? 0 : null;
+  summary.metrics.tsStrict = readJsonc(join(root, "tsconfig.json"))?.compilerOptions?.strict === true;
+  return { status, ...(status === "ok" ? {} : { reason: r.reason || "typecheck failed with no recognisable errors" }), code: r.code, errors };
 });
 
 // ---------- Lint ----------
 tool("eslint", () => {
   if (!existsSync(bin("eslint"))) return { skipped: "eslint not installed" };
-  const r = run(bin("eslint"), [srcDir, "-f", "json"]);
-  let errors = 0, warnings = 0, byRule = {};
-  try { for (const f of JSON.parse(r.stdout)) { errors += f.errorCount; warnings += f.warningCount; for (const m of f.messages) byRule[m.ruleId || "parse"] = (byRule[m.ruleId || "parse"] || 0) + 1; } } catch {}
+  // ESLint exits 1 for lint errors and 2 when it crashed or its config is broken.
+  const r = runTool(bin("eslint"), [srcDir, "-f", "json"], { cwd: root, env: { CI: "1" }, isFindings: ({ code }) => code === 1 });
   save("eslint.json", r.stdout);
+  if (r.status !== "ok") { save("eslint.txt", r.output); summary.metrics.lint = null; return { status: r.status, reason: r.reason }; }
+  let errors = 0, warnings = 0, byRule = {};
+  try { for (const f of JSON.parse(r.stdout)) { errors += f.errorCount; warnings += f.warningCount; for (const m of f.messages) byRule[m.ruleId || "parse"] = (byRule[m.ruleId || "parse"] || 0) + 1; } }
+  catch { save("eslint.txt", r.output); summary.metrics.lint = null; return { status: "failed", reason: "unreadable ESLint output" }; }
   summary.metrics.lint = { errors, warnings, topRules: Object.entries(byRule).sort((a, b) => b[1] - a[1]).slice(0, 15) };
-  return { errors, warnings };
+  return { status: "ok", errors, warnings };
 });
 
 // ---------- Architecture: boundaries + cycles ----------
@@ -155,15 +165,22 @@ tool("vulnerabilities", () => {
     const r = run("osv-scanner", ["scan", "source", "-r", ".", "--format", "json"]);
     save("osv.json", r.stdout);
   }
-  const lock = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"].find((l) => existsSync(join(root, l)));
-  if (!lock) return { skipped: "no lockfile (audit impossible — that itself is a finding)" };
-  const cmd = lock === "pnpm-lock.yaml" ? ["pnpm", ["audit", "--json", "--prod"]] : lock === "yarn.lock" ? ["yarn", ["npm", "audit", "--json", "--environment", "production"]] : ["npm", ["audit", "--json", "--omit=dev"]];
+  const lock = pm.lockfile;
+  if (!lock) {
+    const other = ["Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "gradle.lockfile", "packages.lock.json"].find((l) => existsSync(join(root, l)));
+    if (other) return { skipped: `${other}: dependency audit not assessed (osv-scanner covers this ecosystem)` };
+    return { skipped: "no lockfile (audit impossible — that itself is a finding)" };
+  }
+  const cmd = pm.name === "pnpm" ? ["pnpm", ["audit", "--json", "--prod"]] : pm.name === "yarn" ? ["yarn", ["npm", "audit", "--json", "--environment", "production"]] : pm.name === "npm" ? ["npm", ["audit", "--json", "--omit=dev"]] : null;
+  if (!cmd) return { skipped: `${lock}: dependency audit not assessed (osv-scanner covers bun lockfiles)` };
   const r = run(...cmd);
   save("dep-audit.json", r.stdout);
   try { const v = JSON.parse(r.stdout).metadata?.vulnerabilities; if (v) summary.metrics.vulnerableDeps = v; } catch {}
-  const o = run("npm", ["outdated", "--json"]);
-  save("outdated.json", o.stdout);
-  try { const j = JSON.parse(o.stdout || "{}"); summary.metrics.outdated = { total: Object.keys(j).length, majorBehind: Object.values(j).filter((d) => d.current && d.latest && d.current.split(".")[0] !== d.latest.split(".")[0]).length }; } catch {}
+  if (pm.name === "npm") {
+    const o = run("npm", ["outdated", "--json"]);
+    save("outdated.json", o.stdout);
+    try { const j = JSON.parse(o.stdout || "{}"); summary.metrics.outdated = { total: Object.keys(j).length, majorBehind: Object.values(j).filter((d) => d.current && d.latest && d.current.split(".")[0] !== d.latest.split(".")[0]).length }; } catch {}
+  }
   return { lock };
 });
 
@@ -265,7 +282,7 @@ tool("hotspots", () => {
 tool("tests", () => {
   if (!pkg.scripts?.test || /no test specified/.test(pkg.scripts.test)) { summary.metrics.tests = { configured: false }; return { skipped: "no test script" }; }
   if (noTests) return { skipped: "--no-tests" };
-  const r = run("npm", ["test", "--silent", "--", ...(/vitest/.test(pkg.scripts.test) ? ["--run"] : [])], { timeout: 420000 });
+  const r = run(...testCommand(pm.name, /vitest/.test(pkg.scripts.test) ? ["--run"] : []), { timeout: 420000 });
   save("tests.txt", r.out.slice(-20000));
   const passed = r.out.match(/(\d+)\s+(?:passed|passing)/i), failed = r.out.match(/(\d+)\s+(?:failed|failing)/i);
   summary.metrics.tests = { configured: true, exitCode: r.code, timedOut: r.timedOut, passed: passed ? +passed[1] : null, failed: failed ? +failed[1] : null };
@@ -277,9 +294,12 @@ save("summary.json", JSON.stringify(summary, null, 2));
 console.log(`Audit evidence written to ${relative(root, out) || out}`);
 console.log(JSON.stringify(summary.metrics, null, 1).slice(0, 6000));
 if (summary.skipped.length) console.log("\nSkipped:\n  " + summary.skipped.join("\n  "));
+const broken = Object.entries(summary.tools).filter(([, v]) => v.status === "failed" || v.status === "timed-out");
+if (broken.length) console.log("\nDid not finish (not assessed):\n  " + broken.map(([k, v]) => `${k}: ${v.reason || v.error || v.status}`).join("\n  "));
 
 if (gate) {
   const m = summary.metrics, blockers = [];
+  for (const [name, v] of broken) if (GATE_REQUIRED.includes(name)) blockers.push(`${name} did not finish: ${v.reason || v.error || v.status}`);
   if (m.typeErrors > 0) blockers.push(`${m.typeErrors} type errors`);
   if ((m.vulnerableDeps?.high || 0) + (m.vulnerableDeps?.critical || 0) > 0) blockers.push(`high/critical vulnerable dependencies`);
   const sec = m.patterns?.security || {};

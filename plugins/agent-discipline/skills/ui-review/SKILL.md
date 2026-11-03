@@ -11,7 +11,7 @@ Without screenshots, the agent is designing blind. This loop lets it see its own
 Target: $ARGUMENTS (default: the routes touched in the current diff).
 
 ## Setup (once per project)
-- Check for `playwright` in devDependencies. If it's missing, run `npm i -D playwright && npx playwright install chromium`.
+- Check for `playwright` in devDependencies. If it's missing, install it as a dev dependency with the project's package manager (`npm i -D playwright` on npm), then run `npx playwright install chromium`.
 - Add `.ui-review/` to `.gitignore`.
 
 ## Loop (at most 3 rounds)

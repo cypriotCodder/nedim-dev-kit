@@ -8,8 +8,8 @@
 // Silence one line: add a comment containing "design-guard-ignore"
 
 import { existsSync, readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { join, relative, extname, basename, sep } from "node:path";
+import { join, relative, extname, basename, dirname, sep } from "node:path";
+import { findLocalBin, runTool, warnUser } from "../skills/audit/lib/project.mjs";
 
 const input = JSON.parse(readFileSync(0, "utf8") || "{}");
 const root = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
@@ -24,14 +24,18 @@ if (/(^|\/)(node_modules|dist|\.next)\//.test(rel)) process.exit(0);
 
 const ext = extname(file).toLowerCase();
 const problems = [];
+const warnings = [];
 
 // ---------- 1. ESLint ----------
 const LINTABLE = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"];
-const eslintBin = join(root, "node_modules", ".bin", process.platform === "win32" ? "eslint.cmd" : "eslint");
-if (LINTABLE.includes(ext) && existsSync(eslintBin) && existsSync(file)) {
-  const r = spawnSync(eslintBin, ["--format", "stylish", file], { cwd: root, encoding: "utf8", timeout: 45000 });
-  if (r.status === 1) {
-    problems.push(`ESLint errors in ${relative(root, file)}:\n${(r.stdout || r.stderr).trim().split("\n").slice(0, 40).join("\n")}`);
+const eslint = LINTABLE.includes(ext) && existsSync(file) ? findLocalBin("eslint", dirname(file), root) : null;
+if (eslint) {
+  // ESLint exits 1 for lint errors and 2 when it crashed or its config is broken.
+  const r = runTool(eslint.bin, ["--format", "stylish", file], { cwd: eslint.dir, timeout: 45000, isFindings: ({ code }) => code === 1 });
+  if (r.findings) {
+    problems.push(`ESLint errors in ${rel}:\n${(r.stdout || r.stderr).trim().split("\n").slice(0, 40).join("\n")}`);
+  } else if (r.status !== "ok") {
+    warnings.push(`agent-discipline: ESLint didn't finish on ${rel} (${r.reason}), so lint errors may be unreported.`);
   }
 }
 
@@ -87,7 +91,8 @@ if (hasDesign && STYLE_FILES.includes(ext) && !isTokenFile) {
 }
 
 if (problems.length) {
-  process.stderr.write(problems.join("\n\n") + "\n");
+  process.stderr.write([...problems, ...warnings].join("\n\n") + "\n");
   process.exit(2);
 }
+if (warnings.length) warnUser(warnings.join("\n"));
 process.exit(0);

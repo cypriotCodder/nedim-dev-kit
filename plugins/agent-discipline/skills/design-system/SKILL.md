@@ -36,7 +36,7 @@ Fill `templates/DESIGN.md` into the project root with the chosen direction. Ever
 - **Tailwind v4:** `src/styles/tokens.css` with an `@theme` block. Define semantic color names (`--color-bg`, `--color-surface`, `--color-ink`, `--color-ink-muted`, `--color-line`, `--color-accent`, `--color-accent-ink`, `--color-danger`…), font families, the type scale, radius, shadows, `--ease-*` and `--duration-*`. Where possible, **reset the default palette** with `--color-*: initial;` before defining your own, so classes like `bg-blue-500` don't exist.
 - **Tailwind v3:** put the same tokens in `tailwind.config` `theme` (not `extend`) for colors, so the default palette is gone.
 - **No Tailwind:** use CSS custom properties in `tokens.css`.
-- Motion: copy `templates/motion.ts` to `src/lib/motion.ts` and adjust it to DESIGN.md. Install `motion` (`npm i motion`) for React.
+- Motion: copy `templates/motion.ts` to `src/lib/motion.ts` and adjust it to DESIGN.md. For React, install `motion` with the project's package manager.
 
 ## Step 5: Primitives before screens
 Build these in `src/components/ui/`, using tokens only: Button (primary/secondary/ghost/danger, sizes, loading), Input/Textarea/Select with label, hint and error, Checkbox/Switch, Card/Surface, ListRow, Badge, Dialog/Sheet, Toast, Skeleton, EmptyState, and a Tabs or SegmentedControl. Headless libraries (Radix, React Aria, Base UI) are fine for behaviour, but styling is ours. Never ship shadcn defaults unchanged.

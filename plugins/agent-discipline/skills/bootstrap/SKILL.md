@@ -35,9 +35,10 @@ Templates live in `${CLAUDE_PLUGIN_ROOT}/skills/bootstrap/templates/`.
 ## 3. Install guardrails (JS/TS projects)
 Show the user the plan in a short list, then do it:
 - **Strict TypeScript.** Target: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noFallthroughCasesInSwitch`. On an existing codebase, first run `tsc --noEmit` with the flags on and report the error count. If it's above ~50, enable only `strict` now and record the rest as a follow-up in DECISIONS.md rather than starting a huge fix-up.
+- **Package manager.** Use the one the project already uses (check `packageManager` in `package.json`, then the lockfile). The npm commands below are examples: translate them.
 - **Boundary rules** with dependency-cruiser: `npm i -D dependency-cruiser`, copy `templates/dependency-cruiser.cjs` to `.dependency-cruiser.cjs`, and adapt the `from`/`to` paths to the real folders from step 1. Rules must encode the layering written in CLAUDE.md: no route → db shortcuts, features import each other only via `index.ts`, no circular deps.
 - **One check command.** Add to `package.json` scripts (keep any that already exist):
-  - `"typecheck": "tsc --noEmit"`
+  - `"typecheck": "tsc --noEmit"` (if `tsconfig.json` only has `references`, this checks nothing: use the project's build check, such as `tsc -b`)
   - `"lint": "eslint ."` (set up ESLint flat config with typescript-eslint if missing)
   - `"deps": "depcruise src --config .dependency-cruiser.cjs"`
   - `"check": "npm run typecheck && npm run lint && npm run deps && npm test --if-present"`
