@@ -1,17 +1,6 @@
-# nedim-dev-kit
+# agent-discipline
 
-A Claude Code plugin marketplace holding one plugin, **agent-discipline**. Install it once, and every project you open gets the same workflow.
-
-## Install
-
-1. Push this folder to a GitHub repo (private is fine), e.g. `nedimhuray/nedim-dev-kit`.
-2. In Claude Code:
-   ```
-   /plugin marketplace add nedimhuray/nedim-dev-kit
-   /plugin install agent-discipline@nedim-dev-kit
-   ```
-   Or, without GitHub: `claude plugin marketplace add ./nedim-dev-kit`
-3. Update later with `/plugin marketplace update nedim-dev-kit` (bump `version` in `plugin.json` when you change things).
+Install this plugin once, and every project you open gets the same workflow: spec-first slices, a decision log, guardrail hooks, a non-generic design system and scored project audits. Installation is covered in the [repo README](../../README.md).
 
 ## Use
 
