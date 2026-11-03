@@ -170,7 +170,8 @@ tool("vulnerabilities", () => {
 // ---------- Optional external scanners (used if installed) ----------
 tool("semgrep", () => {
   if (offline || !onPath("semgrep")) return { skipped: "semgrep not installed (brew install semgrep for deeper SAST)" };
-  const r = run("semgrep", ["scan", "--config", "auto", "--json", "--quiet", "--metrics", "off"], { timeout: 420000 });
+  // Not `--config auto`: semgrep refuses to combine it with `--metrics off`.
+  const r = run("semgrep", ["scan", "--config", "p/default", "--json", "--quiet", "--metrics", "off"], { timeout: 420000 });
   save("semgrep.json", r.stdout);
   try { summary.metrics.semgrepFindings = JSON.parse(r.stdout).results.length; } catch {}
   return { code: r.code };

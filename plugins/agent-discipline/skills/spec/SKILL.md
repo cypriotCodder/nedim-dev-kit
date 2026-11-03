@@ -22,6 +22,8 @@ The spec stays the source of truth even after this conversation's context is gon
 - Set status `draft`, show the user a 5-line summary plus the slice list, and **stop for approval**.
 
 ## Phase 3: Build, one slice at a time
+Once the user approves, set status `in progress` before writing any code. The `code-reviewer` agent finds the active spec by this status.
+
 For each slice after approval:
 1. Implement only that slice. Stay inside "Where the code goes". If the spec turns out to be wrong, stop, update the spec, and tell the user. Don't silently diverge.
 2. Write or extend tests for domain logic in the same slice.

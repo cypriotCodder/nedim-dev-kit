@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join, relative, extname, basename } from "node:path";
+import { join, relative, extname, basename, sep } from "node:path";
 
 const input = JSON.parse(readFileSync(0, "utf8") || "{}");
 const root = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
@@ -17,7 +17,10 @@ const ti = input.tool_input || {};
 const file = ti.file_path;
 
 if (!file || existsSync(join(root, ".claude", "guards-off"))) process.exit(0);
-if (file.includes("node_modules") || file.includes("/dist/") || file.includes("/.next/")) process.exit(0);
+
+// Path rules use the project-relative path: where the project lives must not change the result.
+const rel = relative(root, file).split(sep).join("/");
+if (/(^|\/)(node_modules|dist|\.next)\//.test(rel)) process.exit(0);
 
 const ext = extname(file).toLowerCase();
 const problems = [];
@@ -35,7 +38,15 @@ if (LINTABLE.includes(ext) && existsSync(eslintBin) && existsSync(file)) {
 // ---------- 2. Design guard ----------
 const STYLE_FILES = [".tsx", ".jsx", ".vue", ".svelte", ".html", ".css", ".scss", ".astro"];
 const hasDesign = existsSync(join(root, "DESIGN.md")) || existsSync(join(root, "docs", "DESIGN.md"));
-const isTokenFile = /token|theme|globals?\.css|tailwind\.config|design-system[\\/]tokens/i.test(file);
+// Token files define the raw values everything else must reference. Components that merely have
+// "theme" or "token" in their name (ThemeToggle.tsx, token-input.tsx) are not token files.
+const name = basename(rel).toLowerCase();
+const isTokenFile =
+  /^(tokens?|themes?)\.[^.]+$/.test(name) ||                    // tokens.ts, theme.tsx
+  /(^|[-_.])(tokens?|themes?)[-_.](.*\.)?s?css$/.test(name) ||  // design-tokens.css, theme-dark.scss
+  /^globals?\.s?css$/.test(name) ||
+  /^tailwind\.config\./.test(name) ||
+  /(^|\/)design-system\/tokens\//.test(rel);
 
 if (hasDesign && STYLE_FILES.includes(ext) && !isTokenFile) {
   // Only inspect code that was just written, so old files don't nag forever.
