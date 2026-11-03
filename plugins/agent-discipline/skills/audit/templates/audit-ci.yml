@@ -1,0 +1,33 @@
+# Copy to .github/workflows/audit.yml and copy collect.mjs to scripts/audit/collect.mjs
+# (the audit skill can do both for you).
+# Runs the deterministic audit on every PR and weekly; fails on release blockers.
+name: audit
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # churn hotspots need history
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Collect evidence + gate
+        run: node scripts/audit/collect.mjs . --out .audit/raw --gate
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-evidence
+          path: .audit/raw
+          retention-days: 14

@@ -1,0 +1,14 @@
+{
+  "name": "nedim-dev-kit",
+  "description": "Nedim's personal workflow kit: agent discipline, guardrails and a non-generic frontend design system",
+  "owner": {
+    "name": "Nedim Hüray"
+  },
+  "plugins": [
+    {
+      "name": "agent-discipline",
+      "source": "./plugins/agent-discipline",
+      "description": "Bootstrap any repo with CLAUDE.md, specs, decision log, lint/type guardrails, a design system and a screenshot-driven UI review loop"
+    }
+  ]
+}
