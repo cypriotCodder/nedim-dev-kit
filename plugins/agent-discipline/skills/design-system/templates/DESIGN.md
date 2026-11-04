@@ -2,6 +2,8 @@
 
 > Every UI decision in this project comes from this file. If something isn't covered, add it here first, then build it.
 
+<!-- If this design deliberately uses something the design guard flags, allow it here, e.g.: design-guard: allow gradient, inter -->
+
 ## Direction
 - **Idea:** <one sentence, e.g. "A calm transit-signage clarity for busy restaurant staff">
 - **Personality:** <adj>, <adj>, <adj>. **Never feels:** <e.g. like a generic SaaS dashboard, playful, glossy>

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test, describe } from "node:test";
-import { edit, fakeLocalBin, project, write } from "./helpers.mjs";
+import { PLUGIN, edit, fakeLocalBin, project, write } from "./helpers.mjs";
 
 const RAW_HEX = `export const C = () => <div style={{ color: "#ff0000" }} />;\n`;
 const designProject = (opts) => project({ "DESIGN.md": "# Design\n" }, opts);
@@ -95,8 +97,6 @@ describe("post-edit: ESLint", () => {
 });
 
 describe("post-edit: guard accuracy", () => {
-  const pr3 = { todo: "PR 3: tune design guard rules (items 17, 18)" };
-
   const allowed = {
     "Tailwind data variant": `<div className="data-[state=open]:bg-surface" />\n`,
     "anchor link that looks like hex": `<a href="#add">Add</a>\n`,
@@ -104,22 +104,80 @@ describe("post-edit: guard accuracy", () => {
     "spinner with the keyword before the class": `<Spinner loading className="animate-spin" />\n`,
   };
   for (const [label, code] of Object.entries(allowed)) {
-    test(`allows ${label}`, pr3, () => {
+    test(`allows ${label}`, () => {
       assert.equal(edit(designProject(), "src/C.tsx", code).code, 0);
     });
   }
 
-  test("flags bg-white", pr3, () => {
+  test("flags bg-white", () => {
     assert.equal(edit(designProject(), "src/C.tsx", `<div className="bg-white" />\n`).code, 2);
   });
 
-  test("flags raw classes in a cva() call in a .ts file", pr3, () => {
+  test("flags raw classes in a cva() call in a .ts file", () => {
     const code = `export const button = cva("bg-blue-500 text-white");\n`;
     assert.equal(edit(designProject(), "src/button.ts", code).code, 2);
   });
 
-  test("flags the soft-card look split across lines", pr3, () => {
+  test("flags the soft-card look split across lines", () => {
     const code = `<div className="rounded-2xl\n  shadow-xl" />\n`;
     assert.equal(edit(designProject(), "src/C.tsx", code).code, 2);
+  });
+
+  test("doesn't join separate strings when looking for the soft-card look", () => {
+    const code = `<div className="rounded-2xl" />\n<div className="shadow-xl" />\n`;
+    assert.equal(edit(designProject(), "src/C.tsx", code).code, 0);
+  });
+
+  test("still flags real emoji and real hex colors", () => {
+    assert.equal(edit(designProject(), "src/C.tsx", `<p>Launch 🚀</p>\n`).code, 2);
+    assert.equal(edit(designProject(), "src/C.tsx", `<a href="#add" style={{ color: "#add" }} />\n`).code, 2);
+  });
+
+  test("still flags an arbitrary value after a variant", () => {
+    assert.equal(edit(designProject(), "src/C.tsx", `<div className="data-[state=open]:w-[37px]" />\n`).code, 2);
+  });
+
+  test("ignores colors in .ts files outside class helpers", () => {
+    assert.equal(edit(designProject(), "src/chart.ts", `export const palette = ["#ff0000", "bg-blue-500"];\n`).code, 0);
+  });
+});
+
+describe("post-edit: exceptions in DESIGN.md (item 19)", () => {
+  const GRADIENT = `<div className="bg-linear-to-r" />\n`;
+  const allowing = (comment) => project({ "DESIGN.md": `# Design\n${comment}\n` });
+
+  test("flags a rule that isn't allowed", () => {
+    assert.equal(edit(designProject(), "src/C.tsx", GRADIENT).code, 2);
+  });
+
+  test("allows a named rule", () => {
+    assert.equal(edit(allowing("<!-- design-guard: allow gradient, inter -->"), "src/C.tsx", GRADIENT).code, 0);
+  });
+
+  test("reads DESIGN.md from docs/ too", () => {
+    const root = project({ "docs/DESIGN.md": "<!-- design-guard: allow gradient -->\n" });
+    assert.equal(edit(root, "src/C.tsx", GRADIENT).code, 0);
+  });
+
+  test("other rules stay on", () => {
+    assert.equal(edit(allowing("<!-- design-guard: allow gradient -->"), "src/C.tsx", RAW_HEX).code, 2);
+  });
+
+  test("allows the soft-card look across lines", () => {
+    const code = `<div className="rounded-2xl\n  shadow-xl" />\n`;
+    assert.equal(edit(allowing("<!-- design-guard: allow soft-card -->"), "src/C.tsx", code).code, 0);
+  });
+
+  test("warns once about a misspelled rule, naming the valid ones", () => {
+    const root = allowing("<!-- design-guard: allow gradients -->");
+    const first = edit(root, "src/C.tsx", "export {};\n");
+    assert.match(JSON.parse(first.stdout).systemMessage, /unknown design guard rule\(s\): gradients.*Valid rules: hex/);
+    assert.equal(edit(root, "src/D.tsx", "export {};\n").stdout, "");
+  });
+
+  test("the example in the DESIGN.md template doesn't turn anything off", () => {
+    const template = readFileSync(join(PLUGIN, "skills/design-system/templates/DESIGN.md"), "utf8");
+    const root = project({ "DESIGN.md": template });
+    assert.equal(edit(root, "src/C.tsx", GRADIENT).code, 2);
   });
 });
