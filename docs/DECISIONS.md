@@ -4,6 +4,18 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-008: Collected evidence is safe to keep, and collecting it is safe to run  (2026-11-04, status: accepted)
+**Context:** `patterns.txt` stored matched lines, and CI uploaded all raw evidence as an artifact. ESLint's report holds a copy of each file with a problem, and jscpd's holds the duplicated code. `npx --yes` ran the latest release of each tool with the user's full environment, and `npm test` ran by default, which can hit a real dev database.
+**Decision:** Every write goes through `redact()`, and the ESLint and jscpd reports lose their copies of the code. CI uploads only `summary.json`. npx tools are pinned, run with a short allowlist of environment variables and with install scripts off. Tests run only with `--tests`, `--gate` or in CI.
+**Alternatives:** Redacting only `patterns.txt` (misses every other file that quotes code). No artifact at all (loses the summary a failed gate is debugged from). A blocklist of secret-looking variables (misses names it doesn't know).
+**Consequences:** Redaction only knows the formats it's told about, so raw evidence still mustn't be committed. dependency-cruiser run through npx can't load the project's TypeScript and drops `.ts` files without saying so, so on a TypeScript project the boundary check reports `failed` unless it's installed locally. Pinned versions need updating on purpose, and a major update needs a run against the real tool, since knip 6 changed its report shape. Local audits report tests as not run until someone opts in.
+
+## ADR-007: Secret findings are accepted in a committed file with a reason and an expiry  (2026-11-04, status: accepted)
+**Context:** The gate failed on a fake token in a test and on `.env.development`, which frameworks expect to be committed, and nothing could accept a false positive. The only way out was turning the gate off.
+**Decision:** `.audit-exceptions.json` accepts findings by rule and path, each with a reason and an expiry date. Accepted findings stay in the metrics and are listed in `metrics.exceptions`. An expired entry stops applying. A bad entry or an unreadable file fails the gate. `.env` and `*.local` always count as leaks; other env files count only when they hold a secret. A long string named `token` in a test is reported as a lead and doesn't block, while a real provider key format blocks anywhere.
+**Alternatives:** Inline comments (scatter accepted risks, and can't go in a `.env` or JSON file). A list with no expiry (accepted risks never get looked at again). Ignoring a bad entry (a typo would surprise someone at the next release).
+**Consequences:** Only secret and env findings can be accepted. A vulnerable dependency can't, because `npm audit` metadata gives counts and not advisories, and gitleaks has its own `.gitleaksignore`. Non-test code with a long fake token needs an entry. Env file checks read variable names, so a secret under an unusual name passes unless its value has a known key format.
+
 ## ADR-006: Design guard exceptions live in DESIGN.md  (2026-11-04, status: accepted)
 **Context:** The guard told Claude a gradient was fine if `DESIGN.md` permitted it, but never read `DESIGN.md`. A brand that really uses Inter was flagged forever.
 **Decision:** A comment in `DESIGN.md`, `<!-- design-guard: allow gradient, inter -->`, turns rules off by name. An unknown name warns the user once per session. The audit counts `design-guard-ignore` lines so one-line bypasses stay visible.

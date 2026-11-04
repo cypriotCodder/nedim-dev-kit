@@ -4,7 +4,7 @@
 // Node built-ins only.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 export const readPackageJson = (dir) => {
@@ -16,10 +16,11 @@ export const readPackageJson = (dir) => {
 //         "failed"    it crashed or could not start, so it says nothing about the code
 //         "timed-out" it was stopped before finishing
 // `isFindings(result)` tells a non-zero exit that means "found problems" from one that means "broke".
-export function runTool(cmd, args, { cwd, timeout = 240000, env, isFindings = () => false } = {}) {
+// `baseEnv` replaces the inherited environment, for tools that shouldn't see all of it.
+export function runTool(cmd, args, { cwd, timeout = 240000, env, baseEnv = process.env, isFindings = () => false } = {}) {
   const r = spawnSync(cmd, args, {
     cwd, timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, FORCE_COLOR: "0", ...env },
+    env: { ...baseEnv, FORCE_COLOR: "0", ...env },
   });
   const stdout = r.stdout || "", stderr = r.stderr || "";
   const result = { code: r.status, stdout, stderr, output: [stdout, stderr].filter(Boolean).join("\n"), findings: false };
@@ -29,6 +30,79 @@ export function runTool(cmd, args, { cwd, timeout = 240000, env, isFindings = ()
   if (r.status === 0) return { ...result, status: "ok" };
   if (isFindings(result)) return { ...result, status: "ok", findings: true };
   return { ...result, status: "failed", reason: `exit code ${r.status}` };
+}
+
+// ---------- Project files ----------
+const IGNORED_PATH = /(^|\/)(node_modules|dist|build|out|\.next|\.nuxt|\.turbo|coverage|\.git|\.audit|vendor|target|bin|obj|\.expo|\.venv|venv|__pycache__)(\/|$)/;
+const JS_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte)$/;
+const TS_FILE = /\.(ts|tsx|mts|cts)$/;
+
+function walk(root, unreadable, dir = "") {
+  let entries;
+  try { entries = readdirSync(join(root, dir), { withFileTypes: true }); }
+  catch { unreadable.push(dir || "."); return []; }
+  return entries.flatMap((entry) => {
+    const rel = dir ? `${dir}/${entry.name}` : entry.name;
+    if (IGNORED_PATH.test(rel)) return [];
+    return entry.isDirectory() ? walk(root, unreadable, rel) : entry.isFile() ? [rel] : [];
+  });
+}
+
+// "Not a repo" is a fact about the project. "Git failed" (dubious ownership in a CI container, say)
+// means nothing is known about what's tracked, and must not look the same.
+function gitState(root) {
+  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, encoding: "utf8" });
+  if (r.status === 0) return { state: "ok" };
+  if (r.status === 128 && /not a git repository/i.test(r.stderr)) return { state: "none" };
+  if (r.error?.code === "ENOENT" && !existsSync(join(root, ".git"))) return { state: "none" };
+  return { state: "failed", reason: (r.stderr || r.error?.message || `exit code ${r.status}`).trim().split("\n")[0] };
+}
+
+// files:      project-relative paths of the project's own regular files, for scoping code metrics
+// tracked:    every regular file in git, wherever it is: a key in a tracked bin/ or vendor/ is a leak
+// unreadable: paths that exist but couldn't be checked, so nobody can call them clean
+// `-z` matters: without it git quotes non-ASCII names, which then don't exist on disk.
+export function scanProject(root) {
+  let git = gitState(root);
+  const unreadable = [];
+  if (git.state === "ok") {
+    const ls = (...args) => spawnSync("git", ["ls-files", "-z", ...args], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const cached = ls("--cached"), others = ls("--others", "--exclude-standard");
+    if (cached.status === 0 && others.status === 0) {
+      const regular = (f) => {
+        try { return statSync(join(root, f)).isFile(); } // false for submodules, which git lists
+        catch (e) {
+          if (e.code !== "ENOENT" && e.code !== "ENOTDIR") unreadable.push(f); // deleted is fine, blocked isn't
+          return false;
+        }
+      };
+      const tracked = [...new Set(cached.stdout.split("\0"))].filter((f) => f && regular(f));
+      const untracked = [...new Set(others.stdout.split("\0"))].filter((f) => f && !IGNORED_PATH.test(f) && regular(f));
+      return { git, tracked, unreadable, files: [...new Set([...tracked.filter((f) => !IGNORED_PATH.test(f)), ...untracked])] };
+    }
+    git = { state: "failed", reason: "git ls-files failed" };
+  }
+  return { git, tracked: [], files: walk(root, unreadable), unreadable };
+}
+
+// What to point a JS tool at: each top-level folder holding code, and code files at the top level.
+// Not a fixed list of folder names, which misses `components/` beside `app/`.
+// Not `.`, which would send the tools through build output and other ignored folders.
+export function sourceRoots(files) {
+  const roots = new Set();
+  for (const file of files) {
+    if (!JS_FILE.test(file) || /(^|\/)\./.test(file)) continue;
+    roots.add(file.split("/")[0]);
+  }
+  return roots.size ? [...roots] : ["."];
+}
+
+// The same, without top-level files if there are any folders. A vite.config.js beside src/ would
+// otherwise give dependency-cruiser one module to count, hiding that it read nothing in src/.
+function boundaryRoots(files) {
+  const roots = sourceRoots(files);
+  const folders = roots.filter((r) => files.some((f) => f.startsWith(`${r}/`)));
+  return folders.length ? folders : roots;
 }
 
 // ---------- Package manager ----------
@@ -200,14 +274,21 @@ export const findBoundaryConfig = (root) => BOUNDARY_CONFIGS.find((c) => existsS
 // dependency-cruiser exits 1 for violations and for a broken config, so only the output tells them
 // apart: violations print as `  error rule: a → b`, crashes as `  ERROR: message`.
 // It also exits 0 after checking nothing, for example on .ts files when it can't load TypeScript.
-export function runBoundaryCheck(root, { timeoutMs = 120000 } = {}) {
+// `runner` runs dependency-cruiser some other way when it isn't installed in the project.
+// Without TypeScript beside it, it drops .ts files and reports success, with nothing in its output to
+// show that. A copy run through npx never finds the project's TypeScript, so both cases stop here.
+export function runBoundaryCheck(root, { timeoutMs = 120000, files = scanProject(root).files, dirs = boundaryRoots(files), runner } = {}) {
   const local = findLocalBin("depcruise", root, root);
-  if (!local) return { status: "skipped", reason: "dependency-cruiser not installed", output: "", findings: false };
-  const src = ["src", "app", "apps", "packages", "lib", "server"].find((d) => existsSync(join(root, d))) || ".";
-  const r = runTool(local.bin, [src, "--config", findBoundaryConfig(root), "--output-type", "err"], {
+  const run = local ? (args, options) => runTool(local.bin, args, options) : runner;
+  if (!run) return { status: "skipped", reason: "dependency-cruiser not installed", output: "", findings: false };
+  const inScope = (f) => dirs.some((d) => d === "." || f === d || f.startsWith(`${d}/`));
+  if ((!local || !findLocalBin("tsc", root, root)) && files.some((f) => TS_FILE.test(f) && inScope(f))) {
+    return { status: "failed", reason: "it can't read .ts files without dependency-cruiser and typescript installed in the project", output: "", findings: false };
+  }
+  const r = run([...dirs, "--config", findBoundaryConfig(root), "--output-type", "err"], {
     cwd: root, timeout: timeoutMs, isFindings: ({ output }) => /^\s*error \S+:/m.test(output),
   });
-  if (r.status === "ok" && /\b0 modules\b/.test(r.output)) return { ...r, status: "failed", reason: `it checked 0 modules in ${src}` };
+  if (r.status === "ok" && /\b0 modules\b/.test(r.output)) return { ...r, status: "failed", reason: `it checked 0 modules in ${dirs.join(", ")}` };
   return r;
 }
 

@@ -323,3 +323,18 @@ describe("warnings", () => {
     assert.match(warning(r), /couldn't record the edit/);
   });
 });
+
+describe("a check that throws", () => {
+  // Making the cache folder impossible to create is the simplest way to make a real check throw.
+  const REFS = { "tsconfig.json": `{"files":[],"references":[{"path":"./tsconfig.app.json"}]}\n`, "tsconfig.app.json": "{}\n" };
+
+  test("warns the user and doesn't crash Stop", () => {
+    const root = project(REFS);
+    fakeLocalBin(root, "tsc", "exit 0");
+    write(root, "node_modules/.cache", "not a folder\n");
+    edit(root, "src/a.ts", "export {};\n");
+    const r = stop(root);
+    assert.equal(r.code, 0);
+    assert.match(warning(r), /typecheck didn't finish/);
+  });
+});

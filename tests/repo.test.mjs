@@ -74,3 +74,20 @@ describe("documentation", () => {
     for (const d of readdirSync(join(PLUGIN, "skills"))) assert.match(readme, new RegExp(`skills/${d}/`), d);
   });
 });
+
+describe("audit CI template", () => {
+  const template = readFileSync(join(PLUGIN, "skills/audit/templates/audit-ci.yml"), "utf8");
+
+  test("uploads only the summary, because raw evidence quotes source code", () => {
+    const paths = [...template.matchAll(/^\s*path:\s*(\S+)/gm)].map((m) => m[1]);
+    assert.deepEqual(paths, [".audit/raw/summary.json"]);
+  });
+
+  test("installs a pinned gitleaks, so history gets scanned", () => {
+    assert.match(template, /gitleaks\/releases\/download\/v\d/);
+  });
+
+  test("limits the token's permissions", () => {
+    assert.match(template, /^permissions:\n\s+contents: read/m);
+  });
+});

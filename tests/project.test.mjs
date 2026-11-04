@@ -146,7 +146,7 @@ describe("collect", () => {
     const binDir = join(root, "fake-path");
     fakeBin(binDir, "pnpm", `echo "$*" > "${root}/pnpm-args"; exit 0`);
     fakeBin(binDir, "npm", "exit 1");
-    assert.equal(collect(root, ["--offline"], { binDir }).summary.metrics.tests.exitCode, 0);
+    assert.equal(collect(root, ["--offline", "--tests"], { binDir }).summary.metrics.tests.exitCode, 0);
     assert.ok(existsSync(join(root, "pnpm-args")));
   });
 
