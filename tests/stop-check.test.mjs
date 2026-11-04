@@ -50,9 +50,7 @@ describe("stop-check: current behaviour to keep", () => {
 });
 
 describe("stop-check: project detection", () => {
-  const pr2 = { todo: "PR 2: shared project detection (items 1, 22)" };
-
-  test("checks solution-style tsconfigs instead of passing as a no-op", pr2, () => {
+  test("checks solution-style tsconfigs instead of passing as a no-op", () => {
     // Real tsc with `files: []` plus `references` checks nothing unless -b or -p is used.
     const root = tsProject({
       tsc: `case " $* " in *" -b "*|*" --build "*|*" -p "*|*" --project "*) ${TSC_FAILS};; esac; exit 0`,
@@ -62,7 +60,7 @@ describe("stop-check: project detection", () => {
     assert.equal(stop(root).code, 2);
   });
 
-  test("uses the project's package manager for the typecheck script", pr2, () => {
+  test("uses the project's package manager for the typecheck script", () => {
     const root = tsProject({ tsc: "exit 0", files: { "package.json": `{"scripts":{"typecheck":"x"}}\n`, "pnpm-lock.yaml": "" } });
     write(root, "src/a.ts", "export {};\n");
     const binDir = `${root}/fake-path`;
@@ -72,7 +70,7 @@ describe("stop-check: project detection", () => {
     assert.match(r.stderr, /from-pnpm/);
   });
 
-  test("reports a killed or timed-out typecheck instead of passing silently", pr2, () => {
+  test("reports a killed or timed-out typecheck instead of passing silently", () => {
     const root = tsProject({ tsc: "kill -9 $$" });
     write(root, "src/a.ts", "export {};\n");
     assert.match(stop(root).output, /typecheck|tsc/i);

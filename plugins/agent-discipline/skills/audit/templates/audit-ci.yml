@@ -1,6 +1,7 @@
-# Copy to .github/workflows/audit.yml and copy collect.mjs to scripts/audit/collect.mjs
+# Copy to .github/workflows/audit.yml, and copy collect.mjs and lib/ to scripts/audit/
 # (the audit skill can do both for you).
 # Runs the deterministic audit on every PR and weekly; fails on release blockers.
+# Not on npm? Change `cache` and `npm ci` below to your package manager.
 name: audit
 
 on:

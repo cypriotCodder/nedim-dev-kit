@@ -26,4 +26,6 @@ docs/DECISIONS.md                 why things are the way they are
 
 ## Gotchas
 - Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode` in their frontmatter.
-- `collect.mjs` gets copied into user projects for the CI gate, so it can't import from elsewhere in the plugin yet.
+- `collect.mjs` and `skills/audit/lib/` get copied together into user projects for the CI gate, so `lib/` can't import from elsewhere in the plugin.
+- `git status --porcelain` shows a new folder as `?? src/`, not its files. Fixtures need a committed file in the folder, or changes look absent.
+- Tests that need real compilers are skipped until `npm run test:install-ts` has run. CI always runs it.

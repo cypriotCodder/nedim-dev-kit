@@ -60,33 +60,31 @@ echo '{"results":[{"check_id":"x"}]}'`);
 });
 
 describe("collect: tool status", () => {
-  const pr2 = { todo: "PR 2/4: ok|skipped|failed|timed-out for every tool (items 1, 8)" };
-
-  test("a crashing ESLint is failed, not clean", pr2, () => {
+  test("a crashing ESLint is failed, not clean", () => {
     const root = repo({ "src/a.ts": "export {};\n" });
     fakeLocalBin(root, "eslint", `echo "Oops! Something went wrong!" >&2; exit 2`);
     assert.equal(collect(root).summary.tools.eslint.status, "failed");
   });
 
-  test("a crashing typecheck is failed, not clean", pr2, () => {
+  test("a crashing typecheck is failed, not clean", () => {
     const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
     fakeLocalBin(root, "tsc", `echo "Cannot find module" >&2; exit 1`);
     assert.equal(collect(root).summary.tools.typecheck.status, "failed");
   });
 
-  test("gate fails when a required tool crashed", pr2, () => {
+  test("gate fails when a required tool crashed", () => {
     const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
     fakeLocalBin(root, "tsc", `echo "Cannot find module" >&2; exit 1`);
     assert.equal(collect(root, GATE).code, 1);
   });
 
-  test("checks solution-style tsconfigs", pr2, () => {
+  test("checks solution-style tsconfigs", () => {
     const root = repo({ "tsconfig.json": `{"files":[],"references":[{"path":"./tsconfig.app.json"}]}\n`, "tsconfig.app.json": "{}\n", "src/a.ts": "export {};\n" });
     fakeLocalBin(root, "tsc", `case " $* " in *" -b "*|*" --build "*|*" -p "*|*" --project "*) echo "src/a.ts(1,1): error TS2322: bad"; exit 2;; esac; exit 0`);
     assert.equal(collect(root).summary.metrics.typeErrors, 1);
   });
 
-  test("recognises bun.lock as a lockfile", pr2, () => {
+  test("recognises bun.lock as a lockfile", () => {
     const root = repo({ "bun.lock": "{}\n", "src/a.ts": "export {};\n" });
     const binDir = `${root}/fake-path`;
     for (const name of ["npx", "npm", "bun"]) fakeBin(binDir, name, "exit 0");

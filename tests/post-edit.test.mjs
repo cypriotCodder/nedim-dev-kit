@@ -81,14 +81,13 @@ describe("post-edit: ESLint", () => {
     assert.equal(edit(root, "src/a.ts", "x\n").code, 0);
   });
 
-  const pr2 = { todo: "PR 2: classify every tool result (item 5)" };
-  test("reports a crashed ESLint instead of passing silently", pr2, () => {
+  test("reports a crashed ESLint instead of passing silently", () => {
     const root = project();
     fakeLocalBin(root, "eslint", `echo "Oops! Something went wrong!" >&2; exit 2`);
     assert.match(edit(root, "src/a.ts", "x\n").output, /eslint/i);
   });
 
-  test("reports a killed or timed-out ESLint instead of passing silently", pr2, () => {
+  test("reports a killed or timed-out ESLint instead of passing silently", () => {
     const root = project();
     fakeLocalBin(root, "eslint", "kill -9 $$");
     assert.match(edit(root, "src/a.ts", "x\n").output, /eslint/i);
