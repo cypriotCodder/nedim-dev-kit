@@ -10,7 +10,7 @@ A Claude Code plugin marketplace with one plugin, `agent-discipline`: skills, ag
 ```
 .claude-plugin/marketplace.json   marketplace manifest
 plugins/agent-discipline/         the plugin; only this folder ships to users
-  scripts/                        hook scripts (PostToolUse, Stop)
+  scripts/                        hook scripts (PreToolUse, PostToolUse, Stop)
   skills/  agents/  hooks/        plugin components
 tests/                            black-box tests; not shipped
 docs/DECISIONS.md                 why things are the way they are

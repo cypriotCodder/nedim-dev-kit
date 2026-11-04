@@ -44,7 +44,7 @@ Show the user the plan in a short list, then do it:
   - `"check": "npm run typecheck && npm run lint && npm run deps && npm test --if-present"`
 - Run `npm run check` and fix only what the setup itself broke. Report pre-existing failures and don't fix them unasked.
 
-The plugin's hooks are already active: ESLint runs on every edited file, and `tsc` runs before each "done". They need no per-project setup.
+The plugin's hooks are already active: ESLint runs on every edited file, and `tsc` and the boundary rules run before each "done" on turns that edited code. They need no per-project setup.
 
 ## 4. Frontend?
 If the project has a UI and no `DESIGN.md`, tell the user: "Run `/agent-discipline:design-system` next. Until it exists, UI work will drift back to generic defaults."

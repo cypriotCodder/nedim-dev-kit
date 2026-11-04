@@ -123,7 +123,9 @@ const isPlainTscScript = (script) => /^\s*tsc\s+--noEmit\s*$/.test(script || "")
 // until references are built, `tsc -b --noEmit` is rejected or reports TS6310 depending on the
 // version, and `tsc -b` writes build output. So each config is checked through a temporary one
 // that drops `references` and resolves imports to source.
-export function runTypecheck(root, { timeoutMs = 170000, env } = {}) {
+//
+// `top` is the project root when `root` is a package inside a monorepo: tsc is usually hoisted there.
+export function runTypecheck(root, { top = root, timeoutMs = 170000, env } = {}) {
   const pkg = readPackageJson(root);
   const script = pkg.scripts?.typecheck;
   const refs = referencedConfigs(root);
@@ -133,14 +135,14 @@ export function runTypecheck(root, { timeoutMs = 170000, env } = {}) {
     return runTool(cmd, args, { cwd: root, timeout: timeoutMs, env, isFindings: () => true });
   }
 
-  const tsc = join(root, "node_modules", ".bin", "tsc");
-  if (!existsSync(tsc)) return { status: "skipped", reason: "typescript not installed", output: "", findings: false };
+  const local = findLocalBin("tsc", root, top);
+  if (!local) return { status: "skipped", reason: "typescript not installed", output: "", findings: false };
 
-  const tool = (args, timeout) => runTool(tsc, ["--noEmit", "--pretty", "false", ...args], { cwd: root, timeout, env, isFindings: hasTypeErrors });
+  const tool = (args, timeout) => runTool(local.bin, ["--noEmit", "--pretty", "false", ...args], { cwd: root, timeout, env, isFindings: hasTypeErrors });
   if (!refs) return tool([], timeoutMs);
 
   // Inside node_modules: ignored by git, and @types are still found by walking up from here.
-  const tmp = join(root, "node_modules", ".cache", "agent-discipline", `tsc-${process.pid}`);
+  const tmp = join(local.dir, "node_modules", ".cache", "agent-discipline", `tsc-${process.pid}`);
   const deadline = Date.now() + timeoutMs;
   const results = [];
   try {
@@ -153,7 +155,7 @@ export function runTypecheck(root, { timeoutMs = 170000, env } = {}) {
         extends: config,
         references: [],
         compilerOptions: {
-          rootDir: resolve(root), // sources from referenced projects are now part of this program
+          rootDir: resolve(top), // sources from referenced projects are now part of this program
           composite: false, incremental: false, tsBuildInfoFile: null,
           emitDeclarationOnly: false, declarationMap: false,
         },
@@ -171,6 +173,43 @@ export function runTypecheck(root, { timeoutMs = 170000, env } = {}) {
 }
 
 export const countTypeErrors = (output) => (output.match(/error TS\d+/g) || []).length;
+
+// The folders to typecheck for a set of project-relative files. A root `typecheck` script or a
+// references setup already covers everything; otherwise each file's nearest tsconfig decides.
+export function typecheckDirs(root, files) {
+  if (!files.length) return [];
+  if (readPackageJson(root).scripts?.typecheck || referencedConfigs(root)) return [resolve(root)];
+  const top = resolve(root);
+  const dirs = new Set();
+  for (const file of files) {
+    let dir = dirname(resolve(top, file));
+    if (relative(top, dir).startsWith("..")) continue;
+    for (;;) {
+      if (existsSync(join(dir, "tsconfig.json"))) { dirs.add(dir); break; }
+      if (dir === top) break;
+      dir = dirname(dir);
+    }
+  }
+  return [...dirs];
+}
+
+// ---------- Boundary rules ----------
+const BOUNDARY_CONFIGS = [".dependency-cruiser.cjs", ".dependency-cruiser.mjs", ".dependency-cruiser.js", ".dependency-cruiser.json"];
+export const findBoundaryConfig = (root) => BOUNDARY_CONFIGS.find((c) => existsSync(join(root, c))) || null;
+
+// dependency-cruiser exits 1 for violations and for a broken config, so only the output tells them
+// apart: violations print as `  error rule: a → b`, crashes as `  ERROR: message`.
+// It also exits 0 after checking nothing, for example on .ts files when it can't load TypeScript.
+export function runBoundaryCheck(root, { timeoutMs = 120000 } = {}) {
+  const local = findLocalBin("depcruise", root, root);
+  if (!local) return { status: "skipped", reason: "dependency-cruiser not installed", output: "", findings: false };
+  const src = ["src", "app", "apps", "packages", "lib", "server"].find((d) => existsSync(join(root, d))) || ".";
+  const r = runTool(local.bin, [src, "--config", findBoundaryConfig(root), "--output-type", "err"], {
+    cwd: root, timeout: timeoutMs, isFindings: ({ output }) => /^\s*error \S+:/m.test(output),
+  });
+  if (r.status === "ok" && /\b0 modules\b/.test(r.output)) return { ...r, status: "failed", reason: `it checked 0 modules in ${src}` };
+  return r;
+}
 
 // ---------- Reporting from a hook ----------
 // Shown to the user without blocking Claude: a broken tool isn't something Claude caused or should chase.

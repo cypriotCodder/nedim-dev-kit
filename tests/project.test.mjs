@@ -28,7 +28,7 @@ describe("broken tools warn the user without blocking Claude", () => {
   test("a crashed typecheck exits 0 with a systemMessage", () => {
     const root = repo({ "tsconfig.json": "{}\n", "src/keep.ts": "export {};\n" });
     fakeLocalBin(root, "tsc", `echo "Cannot find module" >&2; exit 1`);
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     const r = stop(root);
     assert.equal(r.code, 0);
     assert.match(JSON.parse(r.stdout).systemMessage, /typecheck didn't finish/);
@@ -60,14 +60,14 @@ describe("monorepos", () => {
     assert.match(edit(root, "apps/web/src/a.ts", "x\n").stderr, /apps\/web/);
   });
 
-  test("typechecks the package with the edited file when the root has no tsconfig", { todo: "PR 3: stop hook needs the edited files from session markers" }, () => {
+  test("typechecks the package with the edited file when the root has no tsconfig", () => {
     const root = gitInit(project({ "apps/web/tsconfig.json": "{}\n" }));
     fakeLocalBin(join(root, "apps/web"), "tsc", `echo "a.ts(1,1): error TS2322: bad"; exit 2`);
     edit(root, "apps/web/src/a.ts", "x\n");
     assert.equal(stop(root).code, 2);
   });
 
-  test("notices new TypeScript files in a new, untracked folder", { todo: "PR 3: `git status` shows only `?? src/` here, so the filter skips them (item 2)" }, () => {
+  test("notices new TypeScript files in a new, untracked folder", () => {
     const root = gitInit(project({ "tsconfig.json": "{}\n", "README.md": "x\n" }));
     gitCommitAll(root);
     fakeLocalBin(root, "tsc", `echo "src/a.ts(1,1): error TS2322: bad"; exit 2`);
@@ -80,14 +80,14 @@ describe("typecheck command", () => {
   test("ignores a plain `tsc --noEmit` script on a references setup, where it checks nothing", () => {
     const root = repo({ "tsconfig.json": SOLUTION, "tsconfig.app.json": "{}\n", "package.json": `{"scripts":{"typecheck":"tsc --noEmit"}}\n` });
     fakeLocalBin(root, "tsc", TSC_ONLY_FAILS_WITH_P);
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     assert.equal(stop(root).code, 2);
   });
 
   test("keeps a custom typecheck script on a references setup", () => {
     const root = repo({ "tsconfig.json": SOLUTION, "tsconfig.app.json": "{}\n", "package.json": `{"scripts":{"typecheck":"tsc -b"}}\n` });
     fakeLocalBin(root, "tsc", TSC_ONLY_FAILS_WITH_P);
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     const binDir = join(root, "fake-path");
     fakeBin(binDir, "npm", "exit 0");
     assert.equal(stop(root, { env: { PATH: `${binDir}:${process.env.PATH}` } }).code, 0);
@@ -96,7 +96,7 @@ describe("typecheck command", () => {
   test("leaves nothing behind in the project", () => {
     const root = repo({ "tsconfig.json": SOLUTION, "tsconfig.app.json": "{}\n" });
     fakeLocalBin(root, "tsc", TSC_ONLY_FAILS_WITH_P);
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     stop(root);
     assert.deepEqual(readdirSync(join(root, "node_modules", ".cache", "agent-discipline")), []);
   });
@@ -111,6 +111,11 @@ describe("collect", () => {
     assert.equal(r.summary.tools.typecheck.status, "failed");
     assert.equal(r.summary.metrics.typeErrors, null);
     assert.equal(r.code, 1);
+  });
+
+  test("counts design-guard-ignore lines, so bypasses stay visible", () => {
+    const root = repo({ "src/C.tsx": `const a = "#ff0000"; // design-guard-ignore: brand logo\n` });
+    assert.equal(collect(root).summary.metrics.patterns.maintainability["design-guard-ignore"], 1);
   });
 
   test("real type errors are ok status with a count", () => {
@@ -171,7 +176,7 @@ describe("real TypeScript", () => {
       "tsconfig.app.json": `{"compilerOptions":{"composite":true,"outDir":"out/app","strict":true,"types":[]},"include":["src"],"references":[{"path":"./tsconfig.lib.json"}]}\n`,
       "lib/l.ts": "export const n: number = 1;\n",
     });
-    write(root, "src/a.ts", appCode);
+    edit(root, "src/a.ts", appCode);
     return root;
   };
   const useCompiler = (root, c) => fakeLocalBin(root, "tsc", `exec "${join(REPO, "node_modules", c, "bin", "tsc")}" "$@"`);

@@ -10,6 +10,7 @@ import { after } from "node:test";
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const PLUGIN = join(REPO, "plugins", "agent-discipline");
+const PRE_EDIT = join(PLUGIN, "scripts", "pre-edit.mjs");
 const POST_EDIT = join(PLUGIN, "scripts", "post-edit.mjs");
 const STOP_CHECK = join(PLUGIN, "scripts", "stop-check.mjs");
 const COLLECT = join(PLUGIN, "skills", "audit", "collect.mjs");
@@ -72,15 +73,23 @@ function cleanEnv(extra = {}) {
   return { ...env, ...extra };
 }
 
+// Session state goes to the temp folder, so point that somewhere this run cleans up.
+const sessionTmp = mkdtempSync(join(tmpdir(), "adk-sessions-"));
+tempDirs.push(sessionTmp);
+
 function runHook(script, root, input, env) {
   const r = spawnSync(process.execPath, [script], {
     cwd: root,
     input: JSON.stringify({ cwd: root, ...input }),
     encoding: "utf8",
-    env: cleanEnv({ CLAUDE_PROJECT_DIR: root, ...env }),
+    env: cleanEnv({ CLAUDE_PROJECT_DIR: root, TMPDIR: sessionTmp, ...env }),
   });
   return { code: r.status, stderr: r.stderr, stdout: r.stdout, output: r.stdout + r.stderr };
 }
+
+// The PreToolUse hook for an edit that hasn't happened yet.
+export const preEdit = (root, path, { session = "s1", env } = {}) =>
+  runHook(PRE_EDIT, root, { session_id: session, tool_name: "Write", tool_input: { file_path: join(root, path) } }, env);
 
 // Simulates an Edit: the file is written to disk, then the PostToolUse hook runs.
 export function edit(root, path, content, { session = "s1", env } = {}) {

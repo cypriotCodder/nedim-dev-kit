@@ -29,12 +29,19 @@ CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, a typec
 
 ## What runs automatically (hooks)
 - **After every file edit:** ESLint on that file, and the design guard on new UI code if `DESIGN.md` exists. Problems are sent back to Claude to fix.
-- **Before Claude says "done":** a typecheck if `.ts` files changed. Errors send it back once to fix them.
-- If ESLint or the typecheck crashes or times out, you get a warning. Claude isn't sent to fix it, and it doesn't count as a pass.
-- Both hooks do nothing in projects without Node, ESLint, tsconfig or DESIGN.md.
+- **Before the first edit of a session:** a typecheck and boundary check, to record which problems already exist. This can make that first edit slow on a large project.
+- **Before Claude says "done":** a typecheck if this session edited `.ts` files or a `tsconfig`, and a boundary check if it edited code and the project has a `.dependency-cruiser` config. New problems send Claude back, up to three times. After that you get a warning listing what's still broken.
+- Problems that were there before the session don't block Claude. You get a one-line note instead.
+- If a tool crashes, times out or isn't installed, you get a warning. Claude isn't sent to fix it, and it doesn't count as a pass.
+- Edits made through Bash, such as `sed` or a code generator, aren't tracked. If a turn only made edits that way, the "done" checks don't run.
+- The hooks do nothing in projects without Node, ESLint, tsconfig, a dependency-cruiser config or DESIGN.md.
 - The hooks and scripts need a POSIX shell. They're tested on macOS and Linux, not on Windows.
 - To turn them off for one project, run `mkdir -p .claude && touch .claude/guards-off`.
-- To silence the design guard on one line, add a comment containing `design-guard-ignore`.
+
+### Design guard exceptions
+- To silence it on one line, add a comment containing `design-guard-ignore`. The audit counts these.
+- To allow a rule across the project, add a comment to `DESIGN.md`: `<!-- design-guard: allow gradient, inter -->`.
+- The rules are `hex`, `color-function`, `arbitrary-value`, `palette`, `gradient`, `soft-card`, `inter`, `emoji`, `animation` and `transition-all`.
 
 ## What's inside
 ```
@@ -51,7 +58,7 @@ plugins/agent-discipline/
   agents/*-auditor        security, reliability, performance, maintainability, tooling
   agents/audit-verifier   tries to disprove findings before they reach the report
   agents/design-critic    reviews screenshots against DESIGN.md without seeing the code
-  hooks/ + scripts/       post-edit lint and design guard; stop-time typecheck
+  hooks/ + scripts/       pre-edit baseline; post-edit lint and design guard; stop-time typecheck and boundary check
 ```
 
 ## Make it yours

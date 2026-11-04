@@ -15,7 +15,7 @@ function tsProject({ tsc = TSC_FAILS, files = {} } = {}) {
 describe("stop-check: current behaviour to keep", () => {
   test("sends type errors back to Claude", () => {
     const root = tsProject();
-    write(root, "src/a.ts", "export const a: number = 'x';\n");
+    edit(root, "src/a.ts", "export const a: number = 'x';\n");
     const r = stop(root);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /TS2322/);
@@ -23,7 +23,7 @@ describe("stop-check: current behaviour to keep", () => {
 
   test("passes when the typecheck passes", () => {
     const root = tsProject({ tsc: "exit 0" });
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     assert.equal(stop(root).code, 0);
   });
 
@@ -33,14 +33,14 @@ describe("stop-check: current behaviour to keep", () => {
 
   test("respects .claude/guards-off", () => {
     const root = tsProject();
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     write(root, ".claude/guards-off", "");
     assert.equal(stop(root).code, 0);
   });
 
   test("prefers the project's typecheck script", () => {
     const root = tsProject({ tsc: "exit 0", files: { "package.json": `{"scripts":{"typecheck":"x"}}\n` } });
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     const binDir = `${root}/fake-path`;
     fakeBin(binDir, "npm", `echo "from-npm-script error"; exit 1`);
     const r = stop(root, { env: { PATH: `${binDir}:${process.env.PATH}` } });
@@ -56,13 +56,13 @@ describe("stop-check: project detection", () => {
       tsc: `case " $* " in *" -b "*|*" --build "*|*" -p "*|*" --project "*) ${TSC_FAILS};; esac; exit 0`,
       files: { "tsconfig.json": `{"files":[],"references":[{"path":"./tsconfig.app.json"}]}\n`, "tsconfig.app.json": "{}\n" },
     });
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     assert.equal(stop(root).code, 2);
   });
 
   test("uses the project's package manager for the typecheck script", () => {
     const root = tsProject({ tsc: "exit 0", files: { "package.json": `{"scripts":{"typecheck":"x"}}\n`, "pnpm-lock.yaml": "" } });
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     const binDir = `${root}/fake-path`;
     fakeBin(binDir, "npm", "exit 0");
     fakeBin(binDir, "pnpm", `echo "from-pnpm error"; exit 1`);
@@ -72,46 +72,45 @@ describe("stop-check: project detection", () => {
 
   test("reports a killed or timed-out typecheck instead of passing silently", () => {
     const root = tsProject({ tsc: "kill -9 $$" });
-    write(root, "src/a.ts", "export {};\n");
+    edit(root, "src/a.ts", "export {};\n");
     assert.match(stop(root).output, /typecheck|tsc/i);
   });
 });
 
 describe("stop-check: session awareness", () => {
-  const pr3 = { todo: "PR 3: session edit markers and error baseline (items 2, 3, 6)" };
 
-  test("catches broken TypeScript committed during the session", pr3, () => {
+  test("catches broken TypeScript committed during the session", () => {
     const root = tsProject();
     edit(root, "src/a.ts", "export const a: number = 'x';\n");
     gitCommitAll(root);
     assert.equal(stop(root).code, 2);
   });
 
-  test("does not bounce an idle turn because of someone else's dirty files", pr3, () => {
+  test("does not bounce an idle turn because of someone else's dirty files", () => {
     const root = tsProject();
     write(root, "src/dirty.ts", "export const a: number = 'x';\n");
     assert.equal(stop(root, { session: "idle-session" }).code, 0);
   });
 
-  test("checks changed files whose names contain spaces", pr3, () => {
+  test("checks changed files whose names contain spaces", () => {
     const root = tsProject();
     edit(root, "src/my file.ts", "export const a: number = 'x';\n");
     assert.equal(stop(root).code, 2);
   });
 
-  test("re-checks after the first fix attempt instead of trusting it", pr3, () => {
+  test("re-checks after the first fix attempt instead of trusting it", () => {
     const root = tsProject();
     edit(root, "src/a.ts", "export const a: number = 'x';\n");
     assert.equal(stop(root, { active: true }).code, 2);
   });
 
-  test("does not offer 'pre-existing' as a way out of new errors", pr3, () => {
+  test("does not offer 'pre-existing' as a way out of new errors", () => {
     const root = tsProject();
     edit(root, "src/a.ts", "export const a: number = 'x';\n");
     assert.doesNotMatch(stop(root).stderr, /pre-existing/);
   });
 
-  test("runs the boundary check when the project has one", pr3, () => {
+  test("runs the boundary check when the project has one", () => {
     const root = tsProject({ tsc: "exit 0", files: { ".dependency-cruiser.cjs": "module.exports = {};\n" } });
     fakeLocalBin(root, "depcruise", `echo "error no-feature-internals: a -> b"; exit 1`);
     edit(root, "src/a.ts", "export {};\n");

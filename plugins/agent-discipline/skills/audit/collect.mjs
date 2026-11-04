@@ -234,6 +234,7 @@ const PATTERNS = [
   ["maintainability", "any-type", /:\s*any\b|<any>|as any\b/],
   ["maintainability", "ts-suppression", /@ts-ignore|@ts-nocheck|@ts-expect-error/],
   ["maintainability", "lint-suppression", /eslint-disable/],
+  ["maintainability", "design-guard-ignore", /design-guard-ignore/],
   ["maintainability", "console-log", /console\.log\(/],
   ["maintainability", "todo", /\b(?:TODO|FIXME|HACK|XXX)\b/],
 ];
