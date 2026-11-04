@@ -13,7 +13,7 @@ Mode and scope: $ARGUMENTS (default `full` on the repo root). An `--since-last` 
 Files used here: `${CLAUDE_PLUGIN_ROOT}/skills/audit/collect.mjs`, `rubric.md` and `report-template.md` in the same folder.
 
 ## 0. Prepare
-- Add `.audit/` to `.gitignore` if it's missing. Raw evidence can contain snippets of secrets, so it must never be committed.
+- Add `.audit/` to `.gitignore` if it's missing. Known secret formats are redacted, but raw evidence still quotes source code, so it must never be committed.
 - Note the date: `D=$(date +%F)`. Reports go in `docs/audits/`.
 - Monorepo (has `workspaces`, `apps/`, `packages/`)? List the packages and audit each deployable app as its own scope. Score the apps separately and add one combined line.
 - Read `CLAUDE.md`, `docs/DECISIONS.md` and any previous `docs/audits/latest.json`.
@@ -23,9 +23,11 @@ Files used here: `${CLAUDE_PLUGIN_ROOT}/skills/audit/collect.mjs`, `rubric.md` a
 ```
 node ${CLAUDE_PLUGIN_ROOT}/skills/audit/collect.mjs . --out .audit/raw
 ```
-It runs typecheck, ESLint, boundaries/circular deps, knip (dead code, unused deps), jscpd (duplication), npm/pnpm audit plus outdated packages, optional semgrep, gitleaks and osv-scanner, a built-in pattern scan, size and churn hotspots, and tests. Add `--no-tests` for `quick` mode, or if tests need services that aren't running. If `semgrep` or `gitleaks` aren't installed, say so once in the report under "Coverage gaps" (`brew install semgrep gitleaks`). Don't install them unasked.
+It runs typecheck, ESLint, boundaries/circular deps, knip (dead code, unused deps), jscpd (duplication), npm/pnpm audit plus outdated packages, optional semgrep, gitleaks and osv-scanner, a built-in pattern scan, and size and churn hotspots. Project tests don't run by default, because they can hit a real dev database: add `--tests` once the user confirms they're safe to run here, and otherwise list them under "Coverage gaps". If `semgrep` or `gitleaks` aren't installed, say so once in the report under "Coverage gaps" (`brew install semgrep gitleaks`). Don't install them unasked.
 
 Read `.audit/raw/summary.json`. Pattern hits are **leads, not findings**: they need a human-level read before they count.
+
+Every entry in `tools` has a `status`. `failed` or `timed-out` means that tool says nothing about the code, so a missing metric is not a clean result. List each one under "Coverage gaps" as not assessed, and don't let it raise a score. `metrics.exceptions` lists secret findings the project has accepted in `.audit-exceptions.json`. Read each reason and flag any that doesn't hold up.
 
 ## 2. Build the system map (5–10 minutes, not more)
 Write `.audit/map.md`, about 60 lines at most:

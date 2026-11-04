@@ -4,6 +4,9 @@
 # Not on npm? Change `cache` and `npm ci` below to your package manager.
 name: audit
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   schedule:
@@ -23,12 +26,18 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Install gitleaks # scans git history; the gate fails if it finds a secret there
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
       - name: Collect evidence + gate
         run: node scripts/audit/collect.mjs . --out .audit/raw --gate
-      - name: Upload evidence
+      # Only the summary. The rest of .audit/raw quotes source code, and redaction only knows
+      # secret formats it has been told about.
+      - name: Upload summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: audit-evidence
-          path: .audit/raw
+          name: audit-summary
+          path: .audit/raw/summary.json
           retention-days: 14

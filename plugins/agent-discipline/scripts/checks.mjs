@@ -35,10 +35,9 @@ export function runChecks(checks, budgetMs) {
   const deadline = Date.now() + budgetMs;
   return checks.map((check) => {
     const remaining = deadline - Date.now();
-    const result = remaining > 0
-      ? check.run(remaining)
-      : { status: "timed-out", reason: `no time left after ${Math.round(budgetMs / 1000)}s`, output: "", findings: false };
-    return { check, result };
+    if (remaining <= 0) return { check, result: { status: "timed-out", reason: `no time left after ${Math.round(budgetMs / 1000)}s`, output: "", findings: false } };
+    try { return { check, result: check.run(remaining) }; }
+    catch (e) { return { check, result: { status: "failed", reason: e.message, output: "", findings: false } }; } // the other checks' results still count
   });
 }
 

@@ -20,12 +20,22 @@ Monthly (or before a release): **audit → fix-findings batch-0 → audit --sinc
 
 ## Audits
 `/agent-discipline:audit` never edits code. It works in four steps:
-1. **Collects evidence with real tools** (`collect.mjs`): typecheck, ESLint, circular deps and boundaries, knip (dead code and unused deps), jscpd (duplication), npm audit and outdated packages, a built-in secret and risky-pattern scan, churn hotspots, and tests. It also uses semgrep, gitleaks and osv-scanner if they're installed (`brew install semgrep gitleaks`).
+1. **Collects evidence with real tools** (`collect.mjs`): typecheck, ESLint, circular deps and boundaries, knip (dead code and unused deps), jscpd (duplication), npm audit and outdated packages, a built-in secret and risky-pattern scan, churn hotspots, and tests when asked. It also uses semgrep, gitleaks and osv-scanner if they're installed (`brew install semgrep gitleaks`).
 2. **Maps the system**: entry points, trust boundaries and critical flows.
 3. **Runs 5 specialist auditors in parallel**: security, reliability, performance, maintainability and reuse, and tooling (which includes your CLAUDE.md, agents and skills). Your project's own agents, such as a `security-review` agent, run alongside them.
 4. **Verifies, scores and tracks.** A skeptical verifier tries to disprove every high and critical finding. Scores follow a fixed rubric (`rubric.md`) with hard caps. Outputs go to `docs/audits/<date>.md`, `latest.json`, `history.csv` and `backlog.md`, and the next audit shows what was fixed, what's new and what's still open.
 
-CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, a typecheck that can't finish, high/critical vulnerable deps, leaked keys, tracked `.env` files or failing tests. The workflow template is in `skills/audit/templates/audit-ci.yml`.
+CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, high/critical vulnerable deps, leaked keys, secrets in git history, a tracked `.env` or `.env.local` (or another `.env.*` file holding a secret), failing tests, or any of those checks failing to finish. The workflow template is in `skills/audit/templates/audit-ci.yml`.
+
+To accept a secret finding, such as a fake key in a fixture, commit an `.audit-exceptions.json`. Each entry needs a reason and an expiry date, and an entry the gate can't read fails it:
+
+```json
+{ "exceptions": [
+  { "rule": "provider-key", "path": "tests/fixtures/**", "reason": "Example key from the AWS docs", "expires": "2027-06-30" }
+] }
+```
+
+`rule` is `provider-key`, `hardcoded-secret` or `env-file`. Project tests only run with `--tests`, `--gate` or in CI, because a local run can touch a real dev database.
 
 ## What runs automatically (hooks)
 - **After every file edit:** ESLint on that file, and the design guard on new UI code if `DESIGN.md` exists. Problems are sent back to Claude to fix.
