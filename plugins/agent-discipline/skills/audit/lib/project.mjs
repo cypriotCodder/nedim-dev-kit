@@ -17,7 +17,10 @@ export const readPackageJson = (dir) => {
 //         "timed-out" it was stopped before finishing
 // `isFindings(result)` tells a non-zero exit that means "found problems" from one that means "broke".
 // `baseEnv` replaces the inherited environment, for tools that shouldn't see all of it.
-export function runTool(cmd, args, { cwd, timeout = 240000, env, baseEnv = process.env, isFindings = () => false } = {}) {
+// AGENT_DISCIPLINE_TOOL_TIMEOUT_MS lowers every limit, for a CI job with less time than the defaults.
+const TIMEOUT_CAP = Number(process.env.AGENT_DISCIPLINE_TOOL_TIMEOUT_MS) || Infinity;
+export function runTool(cmd, args, { cwd, timeout: wanted = 240000, env, baseEnv = process.env, isFindings = () => false } = {}) {
+  const timeout = Math.min(wanted, TIMEOUT_CAP);
   const r = spawnSync(cmd, args, {
     cwd, timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     env: { ...baseEnv, FORCE_COLOR: "0", ...env },
@@ -33,7 +36,9 @@ export function runTool(cmd, args, { cwd, timeout = 240000, env, baseEnv = proce
 }
 
 // ---------- Project files ----------
-const IGNORED_PATH = /(^|\/)(node_modules|dist|build|out|\.next|\.nuxt|\.turbo|coverage|\.git|\.audit|vendor|target|bin|obj|\.expo|\.venv|venv|__pycache__)(\/|$)/;
+// Build output, dependencies and caches: never the project's own code.
+export const IGNORED_DIRS = ["node_modules", "dist", "build", "out", ".next", ".nuxt", ".turbo", "coverage", ".git", ".audit", "vendor", "target", "bin", "obj", ".expo", ".venv", "venv", "__pycache__"];
+const IGNORED_PATH = new RegExp(`(^|/)(${IGNORED_DIRS.map((d) => d.replace(/\./g, "\\.")).join("|")})(/|$)`);
 export const JS_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte)$/;
 export const TS_FILE = /\.(ts|tsx|mts|cts)$/;
 export const ESLINT_FILE = /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte)$/i; // what the edit hook lints
@@ -191,6 +196,60 @@ export function referencedConfigs(root) {
   };
   visit(start);
   return [...configs];
+}
+
+// ---------- strict ----------
+const isFile = (path) => { try { return statSync(path).isFile(); } catch { return false; } };
+
+// Where `extends` points: a path from the config's folder, or a package found the way tsc finds it.
+function resolveExtends(fromConfig, spec) {
+  const asFile = (path) => [path, `${path}.json`].find(isFile);
+  if (/^(\.{1,2}(\/|$)|\/)/.test(spec)) return asFile(resolve(dirname(fromConfig), spec)) || null;
+  for (let dir = dirname(fromConfig); ; dir = dirname(dir)) {
+    const base = join(dir, "node_modules", spec);
+    const found = asFile(base) || (existsSync(join(base, "package.json")) && (() => {
+      const field = readJsonc(join(base, "package.json"))?.tsconfig;
+      return field && asFile(join(base, field));
+    })()) || asFile(join(base, "tsconfig.json"));
+    if (found) return found;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+// { strict } once a config in the chain sets it, {} when none does, or { unknown } / { broken }.
+// With several `extends`, later ones override earlier ones, so they're read last first.
+function strictIn(path, root, seen = new Set()) {
+  const name = relative(root, path) || path;
+  if (seen.has(path)) return { broken: `${name} extends itself` };
+  seen.add(path);
+  const config = readJsonc(path);
+  if (!config) return { broken: `${name} can't be read as JSON` };
+  if (config.compilerOptions?.strict !== undefined) return { strict: config.compilerOptions.strict === true };
+  const specs = [config.extends ?? []].flat();
+  for (const spec of specs.reverse()) {
+    if (typeof spec !== "string") return { broken: `${name} has an extends that isn't a string` };
+    const target = resolveExtends(path, spec);
+    if (!target) return { unknown: `${name} extends ${spec}, which isn't installed or doesn't exist` };
+    const r = strictIn(target, root, seen);
+    if (r.strict !== undefined || r.unknown || r.broken) return r;
+  }
+  return {};
+}
+
+// Whether the project's root tsconfig has strict on, following `extends` and project references.
+// strict: true, false or null. status: "ok", "skipped" (it depends on a config that isn't here)
+// or "failed" (a config couldn't be read).
+export function readStrict(root) {
+  const configs = referencedConfigs(root) ?? [join(root, "tsconfig.json")];
+  const results = configs.map((c) => ({ config: relative(root, c), ...strictIn(c, root) }));
+  const broken = results.find((r) => r.broken);
+  if (broken) return { strict: null, status: "failed", reason: broken.broken };
+  // Not set anywhere in the chain is tsc's default, which is off.
+  const off = results.filter((r) => r.strict === false || (r.strict === undefined && !r.unknown));
+  if (off.length) return { strict: false, status: "ok", off: off.map((r) => r.config) };
+  const unknown = results.find((r) => r.unknown);
+  if (unknown) return { strict: null, status: "skipped", reason: unknown.unknown };
+  return { strict: true, status: "ok" };
 }
 
 // ---------- Typecheck ----------

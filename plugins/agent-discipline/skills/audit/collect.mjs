@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative, extname, resolve } from "node:path";
 import { EXCEPTIONS_FILE, applyExceptions, loadExceptions } from "./lib/exceptions.mjs";
-import { JS_FILE, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, readJsonc, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
+import { IGNORED_DIRS, JS_FILE, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, readStrict, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
 import { HARDCODED_SECRET, PROVIDER_KEY, envFileLeak, isEnvTemplate, redact } from "./lib/secrets.mjs";
 import { KIT_VERSION } from "./lib/version.mjs";
 
@@ -34,7 +34,22 @@ const srcArg = opt("--src");
 const baselineArg = opt("--baseline", "docs/audits/latest.json");
 const root = resolve(argv[0] || ".");
 const out = resolve(root, outArg || ".audit/raw");
+// Console output can quote tool errors, so it goes through redaction like the files do.
+const log = (text) => console.log(redact(text));
+const logError = (text) => console.error(redact(text));
+// A folder that isn't there would be linted as nothing and reported as clean.
+if (srcArg && !statSync(resolve(root, srcArg), { throwIfNoEntry: false })?.isDirectory()) {
+  logError(`collect.mjs: --src ${srcArg} isn't a folder in ${root}`);
+  process.exit(2);
+}
+
+// Everything this script writes to <out>. Each run removes the last run's copies first, so an
+// auditor can't read evidence from an earlier run that this one didn't produce. Nothing else is touched.
+const OUTPUTS = ["summary.json", "inventory.json", "typecheck.txt", "eslint.txt", "eslint.json", "depcruise.txt", "circular.txt",
+  "knip.json", "knip.txt", "jscpd.txt", "jscpd/jscpd-report.json", "osv.json", "dep-audit.json", "dep-audit.txt", "outdated.json",
+  "semgrep.txt", "semgrep.json", "gitleaks.json", "patterns.txt", "hotspots.txt", "git-log.txt", "changed-since-last.txt", "tests.txt"];
 mkdirSync(out, { recursive: true });
+for (const name of OUTPUTS) rmSync(join(out, name), { force: true });
 
 const summary = { generatedAt: new Date().toISOString(), collectorVersion: KIT_VERSION, commit: null, root, tools: {}, metrics: {}, skipped: [] };
 const bin = (n) => join(root, "node_modules", ".bin", n);
@@ -43,6 +58,7 @@ const run = (cmd, args) => {
   return { code: r.status, stdout: r.stdout || "" };
 };
 const save = (name, text) => {
+  if (!OUTPUTS.includes(name)) throw new Error(`${name} isn't in OUTPUTS, so the next run wouldn't remove it`);
   mkdirSync(dirname(join(out, name)), { recursive: true });
   writeFileSync(join(out, name), redact(text ?? ""));
 };
@@ -100,7 +116,8 @@ tool("git", () => {
 const OTHER_LOCKFILES = ["Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "gradle.lockfile", "packages.lock.json"];
 summary.metrics.lockfile = {
   // With nothing to install there's nothing to lock, so its absence isn't a finding.
-  hasDependencies: Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length > 0,
+  // null when package.json can't be read: that's not the same as having nothing to lock.
+  hasDependencies: pkgBroken ? null : Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length > 0,
   name: pm.lockfile || OTHER_LOCKFILES.find((l) => existsSync(join(root, l))) || null,
 };
 const SRC_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".cs", ".cpp", ".hpp", ".c", ".h"]);
@@ -117,6 +134,14 @@ const envFindings = envFilesTracked.flatMap((file) => {
   return why ? [{ rule: "env-file", file, why }] : [];
 });
 
+const CI_FILES = [
+  ["GitHub Actions", /^\.github\/workflows\/[^/]+\.ya?ml$/], ["GitLab CI", /^\.gitlab-ci\.ya?ml$/],
+  ["CircleCI", /^\.circleci\/config\.ya?ml$/], ["Jenkins", /^Jenkinsfile$/], ["Azure Pipelines", /^azure-pipelines\.ya?ml$|^\.azure-pipelines\//],
+  ["Bitbucket Pipelines", /^bitbucket-pipelines\.ya?ml$/], ["Travis CI", /^\.travis\.ya?ml$/], ["Buildkite", /^\.buildkite\//],
+  ["Drone", /^\.drone\.ya?ml$/], ["Woodpecker", /^\.woodpecker(\.ya?ml|\/)/], ["AppVeyor", /^\.?appveyor\.ya?ml$/],
+  ["Gitea or Forgejo Actions", /^\.(gitea|forgejo)\/workflows\//], ["Google Cloud Build", /^cloudbuild\.ya?ml$/],
+  ["AWS CodeBuild", /^buildspec\.ya?ml$/], ["Tekton", /^\.tekton\//],
+];
 const lineCounts = {};
 let totalLines = 0;
 for (const f of srcFiles) {
@@ -128,7 +153,8 @@ summary.metrics.inventory = {
   testToSourceRatio: +(srcFiles.filter(isTest).length / Math.max(1, srcFiles.filter((f) => !isTest(f)).length)).toFixed(2),
   frameworks: Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).filter((d) => /^(next|react|vue|svelte|express|fastify|@nestjs\/core|hono|koa|prisma|drizzle-orm|typeorm|mongoose|pg|expo|react-native|vite|vitest|jest|@playwright\/test|zod|socket\.io|bullmq|redis|ioredis|@supabase\/supabase-js|firebase)$/.test(d)),
   scripts: Object.keys(pkg.scripts || {}),
-  hasCI: existsSync(join(root, ".github/workflows")) || existsSync(join(root, ".gitlab-ci.yml")),
+  ci: CI_FILES.filter(([, pattern]) => anyFile(pattern)).map(([name]) => name),
+  hasCI: CI_FILES.some(([, pattern]) => anyFile(pattern)),
   hasDocker: files.some((f) => /(^|\/)(Dockerfile|docker-compose\.ya?ml|compose\.ya?ml)$/.test(f)),
   envFilesTracked, envFilesWithSecrets: envFindings.map((f) => `${f.file} (${f.why})`),
   claudeSetup: files.filter((f) => /(^|\/)(CLAUDE\.md|AGENTS\.md|\.claude\/(agents|skills|commands)\/.+\.md|\.claude\/settings(\.local)?\.json|\.mcp\.json)$/.test(f)),
@@ -151,11 +177,17 @@ tool("typecheck", () => {
   const unreadable = r.findings && errors === 0;
   const status = unreadable ? "failed" : r.status;
   summary.metrics.typeErrors = errors > 0 ? errors : status === "ok" ? 0 : null;
-  // Set in a config this one extends, or in the ones it references, isn't visible from here. Unknown isn't off.
-  const tsconfig = readJsonc(join(root, "tsconfig.json"));
-  const strict = tsconfig?.compilerOptions?.strict;
-  summary.metrics.tsStrict = strict === undefined && (!tsconfig || tsconfig.extends || tsconfig.references) ? null : strict === true;
   return { status, ...(status === "ok" ? {} : { reason: r.reason || "typecheck failed with no recognisable errors" }), code: r.code, errors };
+});
+
+// Read from the configs, so it doesn't need TypeScript installed. A config this one extends that isn't
+// here (an uninstalled package) leaves it unknown, which is a gap rather than strict being on.
+if (existsSync(join(root, "tsconfig.json"))) tool("strict", () => {
+  const r = readStrict(root);
+  summary.metrics.tsStrict = r.strict;
+  if (r.status === "failed") return { status: "failed", reason: r.reason };
+  if (r.status === "skipped") return { skipped: r.reason };
+  return r.off ? { off: r.off } : {};
 });
 
 // ---------- Lint ----------
@@ -168,8 +200,16 @@ tool("eslint", () => {
   if (r.status !== "ok") { save("eslint.txt", r.output); return didNotFinish(r); }
   const report = parseJson(r.stdout);
   if (!Array.isArray(report)) { save("eslint.txt", r.output); return unreadable("ESLint"); }
+  // An empty report linted nothing, which can't be called clean when there's code to lint.
+  if (!report.length && srcFiles.some((f) => /\.(c|m)?(j|t)sx?$/.test(f))) { save("eslint.txt", r.output); return { status: "failed", reason: `ESLint linted no files in ${srcDirs.join(", ")}` }; }
   let errors = 0, warnings = 0, byRule = {};
-  for (const f of report) { errors += f.errorCount; warnings += f.warningCount; for (const m of f.messages) byRule[m.ruleId || "parse"] = (byRule[m.ruleId || "parse"] || 0) + 1; }
+  // A file passed by name that its config ignores gets a warning with no rule. It isn't a problem in the code.
+  const isIgnoredNotice = (m) => !m.ruleId && m.severity === 1 && /^File ignored\b/.test(m.message || "");
+  for (const f of report) {
+    errors += f.errorCount;
+    warnings += f.warningCount - f.messages.filter(isIgnoredNotice).length;
+    for (const m of f.messages.filter((x) => !isIgnoredNotice(x))) byRule[m.ruleId || "parse"] = (byRule[m.ruleId || "parse"] || 0) + 1;
+  }
   // Without `source`, the copy of each file with a problem that ESLint includes.
   save("eslint.json", JSON.stringify(report.map(({ source, ...f }) => f)));
   summary.metrics.lint = { errors, warnings, topRules: Object.entries(byRule).sort((a, b) => b[1] - a[1]).slice(0, 15) };
@@ -221,7 +261,8 @@ tool("knip", () => {
 
 // ---------- Duplication (reusability) ----------
 const DUPLICATION_FORMATS = "javascript,typescript,jsx,tsx,vue,svelte,python,go,rust,java,csharp,cpp,c";
-const DUPLICATION_IGNORE = "**/node_modules/**,**/dist/**,**/build/**,**/out/**,**/.next/**,**/coverage/**,**/.audit/**,**/vendor/**,**/*.test.*,**/*.spec.*,**/*.min.js,**/generated/**,**/migrations/**";
+// The folders every other check leaves out, so duplication is measured on the same code.
+const DUPLICATION_IGNORE = [...IGNORED_DIRS.map((d) => `**/${d}/**`), "**/*.test.*", "**/*.spec.*", "**/*.min.js", "**/generated/**", "**/migrations/**"].join(",");
 tool("duplication", () => {
   if (offline) return { skipped: "offline" };
   // A temp folder, because jscpd's report holds the duplicated code and it must pass through save().
@@ -262,38 +303,62 @@ function auditCounts({ stdout, code }) {
   for (const severity of advisories) counts[severity.toLowerCase()] = (counts[severity.toLowerCase()] || 0) + 1;
   return counts;
 }
+// osv-scanner groups each package's advisories, with the highest CVSS score of each group.
+function osvCounts(report) {
+  if (!Array.isArray(report?.results)) return undefined;
+  const counts = {};
+  for (const { packages = [] } of report.results) for (const { groups = [] } of packages) for (const g of groups) {
+    const cvss = Number.parseFloat(g.max_severity);
+    const level = Number.isNaN(cvss) ? "unknown" : cvss >= 9 ? "critical" : cvss >= 7 ? "high" : cvss >= 4 ? "moderate" : "low";
+    counts[level] = (counts[level] || 0) + 1;
+  }
+  return counts;
+}
+const addCounts = (a = {}, b = {}) => Object.fromEntries([...new Set([...Object.keys(a), ...Object.keys(b)])].map((k) => [k, (a[k] || 0) + (b[k] || 0)]));
+
+// Whether there's anything to audit: dependencies in package.json, or another ecosystem's manifest or
+// lockfile. Unknown counts as yes, because a package.json that can't be read may list some.
+const OTHER_MANIFESTS = ["requirements.txt", "pyproject.toml", "Pipfile", "go.mod", "Cargo.toml", "Gemfile", "composer.json", "pom.xml", "build.gradle", "build.gradle.kts"];
+const hasDependencies = summary.metrics.lockfile.hasDependencies !== false || Boolean(summary.metrics.lockfile.name)
+  || OTHER_MANIFESTS.some((m) => existsSync(join(root, m)));
 tool("vulnerabilities", () => {
   if (offline) return { skipped: "offline" };
   if (pkgBroken) return BROKEN_PKG;
   const extra = {};
+  let osv;
   if (onPath("osv-scanner")) {
     // Exits 1 when it finds vulnerabilities.
     const r = runTool("osv-scanner", ["scan", "source", "-r", ".", "--format", "json"], { cwd: root, isFindings: ({ code }) => code === 1 });
     save("osv.json", r.stdout);
-    extra.osv = r.status === "ok" && parseJson(r.stdout) ? "ok" : "failed";
+    osv = r.status === "ok" ? osvCounts(parseJson(r.stdout)) : undefined;
+    extra.osv = osv ? "ok" : "failed";
+    if (osv) summary.metrics.vulnerableDeps = osv;
   }
+  if (!hasDependencies) return { ...doesntApply("no dependencies"), ...extra };
   const lock = pm.lockfile;
+  // Without the package manager's own audit, osv-scanner is the only evidence there is.
+  const osvOnly = (why) => (osv ? { ...extra, by: "osv-scanner", note: why } : extra.osv === "failed" ? { status: "failed", reason: `osv-scanner failed, and ${why}`, ...extra } : { skipped: `${why}: install osv-scanner to audit it`, ...extra });
   if (!lock) {
     const other = summary.metrics.lockfile.name;
-    if (other) return { skipped: `${other}: dependency audit not assessed (osv-scanner covers this ecosystem)`, ...extra };
-    return { skipped: "no lockfile (audit impossible — that itself is a finding)", ...extra };
+    return osvOnly(other ? `${other} has no built-in audit here` : "no lockfile, so the package manager can't audit");
   }
   const yarnClassic = pm.name === "yarn" && /^1\./.test(runTool("yarn", ["--version"], { cwd: root }).stdout); // has no `yarn npm`
   const cmd = pm.name === "pnpm" ? ["pnpm", ["audit", "--json", "--prod"]] : yarnClassic ? ["yarn", ["audit", "--json", "--groups", "dependencies"]] : pm.name === "yarn" ? ["yarn", ["npm", "audit", "--json", "--environment", "production"]] : pm.name === "npm" ? ["npm", ["audit", "--json", "--omit=dev"]] : null;
-  if (!cmd) return { skipped: `${lock}: dependency audit not assessed (osv-scanner covers bun lockfiles)`, ...extra };
+  if (!cmd) return osvOnly(`${lock} has no built-in audit here`);
   // These exit non-zero when they find vulnerabilities, so only readable output says it worked.
   const r = runTool(...cmd, { cwd: root, isFindings: () => true });
   save("dep-audit.json", r.stdout);
   if (r.status !== "ok") return { ...didNotFinish(r), lock, ...extra };
   const counts = auditCounts(r);
   if (!counts) { save("dep-audit.txt", r.output); return { ...unreadable(`${pm.name} audit`), lock, ...extra }; }
-  summary.metrics.vulnerableDeps = counts;
+  summary.metrics.vulnerableDeps = addCounts(counts, osv);
   if (pm.name === "npm") {
     // Exits 1 when anything is outdated. This is context, so it doesn't decide the tool's status.
     const o = runTool("npm", ["outdated", "--json"], { cwd: root, isFindings: () => true });
     save("outdated.json", o.stdout);
-    const j = parseJson(o.stdout || "{}");
-    if (j) summary.metrics.outdated = { total: Object.keys(j).length, majorBehind: Object.values(j).filter((d) => d.current && d.latest && d.current.split(".")[0] !== d.latest.split(".")[0]).length };
+    // Nothing printed is only "nothing outdated" when it exited 0. A crash can also print {"error": ...}.
+    const j = o.status === "ok" && (o.stdout.trim() ? parseJson(o.stdout) : o.code === 0 ? {} : undefined);
+    if (j && typeof j === "object" && !j.error) summary.metrics.outdated = { total: Object.keys(j).length, majorBehind: Object.values(j).filter((d) => d.current && d.latest && d.current.split(".")[0] !== d.latest.split(".")[0]).length };
     else extra.outdated = "failed";
   }
   return { lock, ...extra };
@@ -313,7 +378,11 @@ tool("semgrep", () => {
 });
 tool("gitleaks", () => {
   if (!isGit) return doesntApply("not a git repo");
-  if (!onPath("gitleaks")) return { skipped: "gitleaks not installed (brew install gitleaks to scan git history)" };
+  if (!onPath("gitleaks")) {
+    // In CI the gate decides on it, and an install step that broke must not pass as "nothing found".
+    if (gate && process.env.CI) return { status: "failed", reason: "gitleaks isn't installed, so git history wasn't scanned" };
+    return { skipped: "gitleaks not installed (brew install gitleaks to scan git history)" };
+  }
   if (headBroken) return { status: "failed", reason: "git couldn't read HEAD, so the history can't be scanned" };
   if (!summary.commit) return doesntApply("no commits to scan");
   // It exits 0 after scanning nothing, so a clean result only counts if there was history to scan.
@@ -379,21 +448,45 @@ const PROSE_OR_TEMPLATE = /\.(md|mdx|txt|rst|adoc|example|sample|template)$/i; /
 const WHOLE_FILE_BYTES = 2 * 1024 * 1024;
 const secretFindings = [];
 
+// How a file's text is encoded, from its first bytes, or null for a binary file. A NUL usually means
+// binary, but UTF-16 (common for files from Windows tools) has one in every other byte.
+function textEncoding(head) {
+  if (head[0] === 0xff && head[1] === 0xfe) return "utf-16le";
+  if (head[0] === 0xfe && head[1] === 0xff) return "utf-16be";
+  if (!head.includes(0)) return "utf-8";
+  const pairs = Math.floor(head.length / 2);
+  if (pairs < 2) return null;
+  let evenNul = 0, oddNul = 0;
+  for (let i = 0; i < pairs * 2; i += 2) { if (head[i] === 0) evenNul++; if (head[i + 1] === 0) oddNul++; }
+  // ASCII text as UTF-16LE: nearly every odd byte is NUL and almost no even byte is.
+  if (oddNul > pairs * 0.7 && evenNul < pairs * 0.1) return "utf-16le";
+  if (evenNul > pairs * 0.7 && oddNul < pairs * 0.1) return "utf-16be";
+  return null;
+}
+const decode = (bytes) => {
+  const encoding = textEncoding(bytes.subarray(0, 8000));
+  return encoding && new TextDecoder(encoding).decode(bytes); // drops a BOM
+};
+
 // For files too big to hold in memory for every rule. Returns false for a binary file.
 function forEachLine(path, fn) {
   const fd = openSync(path, "r");
   try {
     const chunk = Buffer.alloc(1024 * 1024);
-    let carry = "", lineNo = 0, n, first = true;
+    let carry = "", lineNo = 0, n, decoder;
     while ((n = readSync(fd, chunk, 0, chunk.length, null)) > 0) {
-      if (first && chunk.subarray(0, Math.min(n, 8000)).includes(0)) return false;
-      first = false;
-      const lines = (carry + chunk.toString("utf8", 0, n)).split("\n");
+      if (!decoder) {
+        const encoding = textEncoding(chunk.subarray(0, Math.min(n, 8000)));
+        if (!encoding) return false;
+        decoder = new TextDecoder(encoding); // in streaming mode, it keeps a character cut across chunks whole
+      }
+      const lines = (carry + decoder.decode(chunk.subarray(0, n), { stream: true })).split("\n");
       carry = lines.pop();
       for (const line of lines) fn(line, lineNo++);
       // One enormous line, as in minified data: check what's here and keep enough to catch a key across the cut.
       if (carry.length > chunk.length) { fn(carry, lineNo); carry = carry.slice(-4096); }
     }
+    carry += decoder?.decode() ?? "";
     if (carry) fn(carry, lineNo);
     return true;
   } finally { closeSync(fd); }
@@ -429,8 +522,8 @@ tool("patterns", () => {
       }
       bytes = readFileSync(join(root, f));
     } catch { notRead.push(f); continue; }
-    if (bytes.subarray(0, 8000).includes(0)) continue; // binary
-    const text = bytes.toString("utf8");
+    const text = decode(bytes);
+    if (text === null) continue; // binary
     const testFile = isTest(f);
     const lines = text.split("\n");
     for (const [cat, id, re] of PATTERNS) {
@@ -525,22 +618,31 @@ tool("tests", () => {
 
 summary.skipped = Object.entries(summary.tools).filter(([, v]) => v.skipped).map(([k, v]) => `${k}: ${v.skipped}`);
 save("summary.json", JSON.stringify(summary, null, 2));
-console.log(`Audit evidence written to ${relative(root, out) || out}`);
-console.log(redact(JSON.stringify(summary.metrics, null, 1)).slice(0, 6000));
-if (summary.skipped.length) console.log("\nSkipped:\n  " + summary.skipped.join("\n  "));
+log(`Audit evidence written to ${relative(root, out) || out}`);
+log(JSON.stringify(summary.metrics, null, 1).slice(0, 6000));
+if (summary.skipped.length) log("\nSkipped:\n  " + summary.skipped.join("\n  "));
 const broken = Object.entries(summary.tools).filter(([, v]) => v.status === "failed" || v.status === "timed-out");
-if (broken.length) console.log("\nDid not finish (not assessed):\n  " + broken.map(([k, v]) => `${k}: ${v.reason || v.status}`).join("\n  "));
+if (broken.length) log("\nDid not finish (not assessed):\n  " + broken.map(([k, v]) => `${k}: ${v.reason || v.status}`).join("\n  "));
+// An entry that matches nothing was probably meant for a file that moved, and now accepts nothing.
+const unused = summary.metrics.exceptions?.unused || [];
+if (unused.length) log(`\nIn ${EXCEPTIONS_FILE} but matching nothing:\n  ` + unused.map((e) => `${e.rule} ${e.path}`).join("\n  "));
 
 if (gate) {
   const m = summary.metrics, blockers = [];
   for (const [name, v] of broken) if (GATE_REQUIRED.includes(name)) blockers.push(`${name} did not finish: ${v.reason || v.status}`);
   if (m.typeErrors > 0) blockers.push(`${m.typeErrors} type errors`);
   if ((m.vulnerableDeps?.high || 0) + (m.vulnerableDeps?.critical || 0) > 0) blockers.push(`high/critical vulnerable dependencies`);
+  // Skipped while online means there are dependencies nothing could audit. --offline is a choice, and is listed below.
+  const deps = summary.tools.vulnerabilities;
+  if (deps?.skipped && !deps.notApplicable && deps.skipped !== "offline") blockers.push(`vulnerabilities not assessed: ${deps.skipped}`);
   if (openSecrets.length) blockers.push(`possible hardcoded secrets: ${openSecrets.slice(0, 10).map((f) => `${f.file}:${f.line} (${f.rule})`).join(", ")}`);
   if (openEnvFiles.length) blockers.push(`.env files tracked in git: ${openEnvFiles.map((f) => `${f.file} (${f.why})`).join(", ")}`);
   if (m.tests?.exitCode > 0) blockers.push(`tests failing`);
   if (m.secretsInHistory > 0) blockers.push(`${m.secretsInHistory} secrets in git history`);
-  if (m.exceptions?.expired.length) console.log(`\nExpired in ${EXCEPTIONS_FILE}, no longer applied:\n  ` + m.exceptions.expired.map((e) => `${e.rule} ${e.path} (${e.expires})`).join("\n  "));
-  if (blockers.length) { console.error("\nGATE FAILED:\n  - " + blockers.join("\n  - ")); process.exit(1); }
-  console.log("\nGATE PASSED");
+  if (m.exceptions?.expired.length) log(`\nExpired in ${EXCEPTIONS_FILE}, no longer applied:\n  ` + m.exceptions.expired.map((e) => `${e.rule} ${e.path} (${e.expires})`).join("\n  "));
+  if (blockers.length) { logError("\nGATE FAILED:\n  - " + blockers.join("\n  - ")); process.exit(1); }
+  // A pass only covers what ran, so it says what didn't.
+  const notAssessed = GATE_REQUIRED.filter((name) => summary.tools[name]?.skipped && !summary.tools[name].notApplicable)
+    .map((name) => `${name} (${summary.tools[name].skipped})`);
+  log(`\nGATE PASSED${notAssessed.length ? `\n  Not assessed: ${notAssessed.join("; ")}` : ""}`);
 }
