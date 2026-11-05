@@ -1,6 +1,7 @@
 ---
 name: bootstrap
 description: Set up (or retrofit) a repo for disciplined agentic development — CLAUDE.md map, docs/specs, decision log, strict TypeScript, architectural boundary rules and a single `npm run check`. Use when starting a new project, adopting the kit in an existing one, or when the user says the codebase is getting messy.
+disable-model-invocation: true
 ---
 
 # Bootstrap a project

@@ -34,8 +34,9 @@ export function runTool(cmd, args, { cwd, timeout = 240000, env, baseEnv = proce
 
 // ---------- Project files ----------
 const IGNORED_PATH = /(^|\/)(node_modules|dist|build|out|\.next|\.nuxt|\.turbo|coverage|\.git|\.audit|vendor|target|bin|obj|\.expo|\.venv|venv|__pycache__)(\/|$)/;
-const JS_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte)$/;
-const TS_FILE = /\.(ts|tsx|mts|cts)$/;
+export const JS_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte)$/;
+export const TS_FILE = /\.(ts|tsx|mts|cts)$/;
+export const ESLINT_FILE = /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte)$/i; // what the edit hook lints
 
 function walk(root, unreadable, dir = "") {
   let entries;
@@ -50,11 +51,19 @@ function walk(root, unreadable, dir = "") {
 
 // "Not a repo" is a fact about the project. "Git failed" (dubious ownership in a CI container, say)
 // means nothing is known about what's tracked, and must not look the same.
+// With git itself missing, only a .git here or in a parent folder can say whether this is a repo.
+function insideRepo(root) {
+  for (let dir = resolve(root); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return true;
+    if (dirname(dir) === dir) return false;
+  }
+}
+
 function gitState(root) {
   const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, encoding: "utf8" });
   if (r.status === 0) return { state: "ok" };
   if (r.status === 128 && /not a git repository/i.test(r.stderr)) return { state: "none" };
-  if (r.error?.code === "ENOENT" && !existsSync(join(root, ".git"))) return { state: "none" };
+  if (r.error?.code === "ENOENT" && !insideRepo(root)) return { state: "none" };
   return { state: "failed", reason: (r.stderr || r.error?.message || `exit code ${r.status}`).trim().split("\n")[0] };
 }
 

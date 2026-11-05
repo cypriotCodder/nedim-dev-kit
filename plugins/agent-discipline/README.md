@@ -14,6 +14,7 @@ Install this plugin once, and every project you open gets the same workflow: spe
 | Made a tech choice | `/agent-discipline:decision <topic>` |
 | Health-check an existing project | `/agent-discipline:audit` (or `quick`, `security`, `--since-last`) |
 | Fix what the audit found | `/agent-discipline:fix-findings batch-0` |
+| Check which guards really work | `/agent-discipline:doctor` |
 
 Daily loop: **spec → slice → checkpoint → /clear → next slice.**
 Monthly (or before a release): **audit → fix-findings batch-0 → audit --since-last.**
@@ -23,7 +24,9 @@ Monthly (or before a release): **audit → fix-findings batch-0 → audit --sinc
 1. **Collects evidence with real tools** (`collect.mjs`): typecheck, ESLint, circular deps and boundaries, knip (dead code and unused deps), jscpd (duplication), npm audit and outdated packages, a built-in secret and risky-pattern scan, churn hotspots, and tests when asked. It also uses semgrep, gitleaks and osv-scanner if they're installed (`brew install semgrep gitleaks`).
 2. **Maps the system**: entry points, trust boundaries and critical flows.
 3. **Runs 5 specialist auditors in parallel**: security, reliability, performance, maintainability and reuse, and tooling (which includes your CLAUDE.md, agents and skills). Your project's own agents, such as a `security-review` agent, run alongside them.
-4. **Verifies, scores and tracks.** A skeptical verifier tries to disprove every high and critical finding. Scores follow a fixed rubric (`rubric.md`) with hard caps. Outputs go to `docs/audits/<date>.md`, `latest.json`, `history.csv` and `backlog.md`, and the next audit shows what was fixed, what's new and what's still open.
+4. **Verifies, scores and tracks.** A skeptical verifier tries to disprove every critical, high and medium finding. The model picks one anchor score per category from `rubric.md`, and `score.mjs` computes everything else: hard caps, weights, stable finding ids and the comparison with the last audit. Outputs go to `docs/audits/<date>.md`, `latest.json`, `history.csv` and `backlog.md`, and the next audit shows what was fixed, what's new and what's still open.
+
+Only a full audit replaces `latest.json` and `history.csv`. `quick`, single-category and `--since-last` runs write a dated report and leave the baseline alone. The audit doesn't commit until you say so.
 
 CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, high/critical vulnerable deps, leaked keys, secrets in git history, a tracked `.env` or `.env.local` (or another `.env.*` file holding a secret), failing tests, or any of those checks failing to finish. The workflow template is in `skills/audit/templates/audit-ci.yml`.
 
@@ -35,7 +38,9 @@ To accept a secret finding, such as a fake key in a fixture, commit an `.audit-e
 ] }
 ```
 
-`rule` is `provider-key`, `hardcoded-secret` or `env-file`. Project tests only run with `--tests`, `--gate` or in CI, because a local run can touch a real dev database.
+`rule` is `provider-key`, `hardcoded-secret` or `env-file`. To accept an audit finding as a known risk, add the same kind of entry to a `risks` list in that file, with `rule` taken from `skills/audit/rules.json`. It stays in the report and stops counting toward scores until it expires. A critical can't be accepted.
+
+Project tests only run with `--tests`, `--gate` or in CI, because a local run can touch a real dev database.
 
 ## What runs automatically (hooks)
 - **After every file edit:** ESLint on that file, and the design guard on new UI code if `DESIGN.md` exists. Problems are sent back to Claude to fix.
@@ -62,8 +67,9 @@ plugins/agent-discipline/
   skills/decision/        ADR log
   skills/design-system/   direction → DESIGN.md → tokens → primitives; banned-defaults list; motion tokens
   skills/ui-review/       Playwright screenshot loop (screenshot.mjs)
-  skills/audit/           collect.mjs, rubric.md, report template, CI template
+  skills/audit/           collect.mjs, score.mjs, rules.json, rubric.md, report template, CI template
   skills/fix-findings/    test-first fixes, batch by batch
+  skills/doctor/          runs each guard and reports active, off, broken or outdated
   agents/code-reviewer    reviews diffs against your rules without seeing the chat
   agents/*-auditor        security, reliability, performance, maintainability, tooling
   agents/audit-verifier   tries to disprove findings before they reach the report

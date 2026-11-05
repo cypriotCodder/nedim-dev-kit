@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, extname, basename, dirname } from "node:path";
 import { projectPath } from "./checks.mjs";
 import { openSession } from "./session.mjs";
-import { findLocalBin, runTool, warnUser } from "../skills/audit/lib/project.mjs";
+import { ESLINT_FILE, findLocalBin, runTool, warnUser } from "../skills/audit/lib/project.mjs";
 
 const input = JSON.parse(readFileSync(0, "utf8") || "{}");
 const root = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
@@ -38,8 +38,7 @@ try {
 }
 
 // ---------- 2. ESLint ----------
-const LINTABLE = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"];
-const eslint = LINTABLE.includes(ext) && existsSync(file) ? findLocalBin("eslint", dirname(file), root) : null;
+const eslint = ESLINT_FILE.test(file) && existsSync(file) ? findLocalBin("eslint", dirname(file), root) : null;
 if (eslint) {
   // ESLint exits 1 for lint errors and 2 when it crashed or its config is broken.
   const r = runTool(eslint.bin, ["--format", "stylish", file], { cwd: eslint.dir, timeout: 45000, isFindings: ({ code }) => code === 1 });

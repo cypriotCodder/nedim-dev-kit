@@ -3,7 +3,7 @@
 // Runs every check that a tool can do better than a model, and writes raw outputs + a summary.
 // It never modifies source files. Optional tools are skipped if unavailable (offline etc.).
 //
-//   node collect.mjs [projectDir] [--out .audit/raw] [--src src] [--offline] [--tests] [--no-tests] [--gate]
+//   node collect.mjs [projectDir] [--out .audit/raw] [--src src] [--baseline docs/audits/latest.json] [--offline] [--tests] [--no-tests] [--gate]
 //   --gate:  exit 1 on release blockers (type errors, high/critical vulnerable deps, leaked keys,
 //            tracked .env files holding secrets, failing tests, or a required tool that didn't
 //            finish). Use in CI. Accepted secret findings go in .audit-exceptions.json.
@@ -18,8 +18,9 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative, extname, resolve } from "node:path";
 import { EXCEPTIONS_FILE, applyExceptions, loadExceptions } from "./lib/exceptions.mjs";
-import { countTypeErrors, detectPackageManager, findBoundaryConfig, readJsonc, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
+import { JS_FILE, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, readJsonc, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
 import { HARDCODED_SECRET, PROVIDER_KEY, envFileLeak, isEnvTemplate, redact } from "./lib/secrets.mjs";
+import { KIT_VERSION } from "./lib/version.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv.splice(i, 2)[1] : d; };
@@ -30,11 +31,12 @@ const wantTests = has("--tests");
 const gate = has("--gate");
 const outArg = opt("--out");
 const srcArg = opt("--src");
+const baselineArg = opt("--baseline", "docs/audits/latest.json");
 const root = resolve(argv[0] || ".");
 const out = resolve(root, outArg || ".audit/raw");
 mkdirSync(out, { recursive: true });
 
-const summary = { generatedAt: new Date().toISOString(), root, tools: {}, metrics: {}, skipped: [] };
+const summary = { generatedAt: new Date().toISOString(), collectorVersion: KIT_VERSION, commit: null, root, tools: {}, metrics: {}, skipped: [] };
 const bin = (n) => join(root, "node_modules", ".bin", n);
 const run = (cmd, args) => {
   const r = spawnSync(cmd, args, { cwd: root, encoding: "utf8", timeout: 240000, maxBuffer: 64 * 1024 * 1024 });
@@ -51,6 +53,9 @@ const tool = (name, fn) => {
     summary.tools[name] = { status: res.skipped ? "skipped" : "ok", ...res, ms: Date.now() - t0 };
   } catch (e) { summary.tools[name] = { status: "failed", reason: String(e).slice(0, 300) }; }
 };
+// Skipped because there's nothing here for the tool to look at, so it isn't a gap in coverage.
+// That has to be shown, like a clean result: a tool it can't reach is a gap, and stays one.
+const doesntApply = (skipped) => ({ skipped, notApplicable: true });
 const didNotFinish = (r) => ({ status: r.status, reason: r.reason, code: r.code });
 const unreadable = (what) => ({ status: "failed", reason: `unreadable ${what} output` });
 const parseJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
@@ -81,7 +86,23 @@ const pm = detectPackageManager(root, pkg);
 const scan = scanProject(root);
 const { files, tracked } = scan;
 const isGit = scan.git.state === "ok";
-tool("git", () => (scan.git.state === "failed" ? { status: "failed", reason: scan.git.reason } : isGit ? {} : { skipped: "not a git repo" }));
+// Includes tracked files in folders the scan leaves out, because a project's TypeScript can live in bin/.
+const anyFile = (pattern) => files.some((f) => pattern.test(f)) || tracked.some((f) => pattern.test(f));
+const head = isGit ? run("git", ["rev-parse", "--verify", "-q", "HEAD"]) : null;
+if (head?.code === 0) summary.commit = head.stdout.trim();
+// Exit 1 is a repo with no commits yet. Anything else means HEAD couldn't be read.
+const headBroken = head && head.code !== 0 && head.code !== 1;
+tool("git", () => {
+  if (scan.git.state === "failed") return { status: "failed", reason: scan.git.reason };
+  if (headBroken) return { status: "failed", reason: `git couldn't read HEAD (exit code ${head.code})` };
+  return isGit ? {} : doesntApply("not a git repo");
+});
+const OTHER_LOCKFILES = ["Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "gradle.lockfile", "packages.lock.json"];
+summary.metrics.lockfile = {
+  // With nothing to install there's nothing to lock, so its absence isn't a finding.
+  hasDependencies: Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length > 0,
+  name: pm.lockfile || OTHER_LOCKFILES.find((l) => existsSync(join(root, l))) || null,
+};
 const SRC_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".cs", ".cpp", ".hpp", ".c", ".h"]);
 const srcFiles = files.filter((f) => SRC_EXT.has(extname(f)) && !/\.d\.ts$|\.min\.js$|generated|\.gen\./.test(f));
 const isTest = (f) => /(\.|_)(test|spec)\.|__tests__|(^|\/)tests?\//.test(f);
@@ -116,7 +137,11 @@ save("inventory.json", JSON.stringify(summary.metrics.inventory, null, 2));
 
 // ---------- Type safety ----------
 tool("typecheck", () => {
-  if (!existsSync(join(root, "tsconfig.json"))) return { skipped: "no tsconfig" };
+  if (!existsSync(join(root, "tsconfig.json"))) {
+    // A package's tsconfig, or a .ts file with none at all, is TypeScript this root-level check can't reach.
+    if (anyFile(/(^|\/)tsconfig[^/]*\.json$/)) return { skipped: "no tsconfig at the root" };
+    return anyFile(TS_FILE) ? { skipped: "TypeScript files, but no tsconfig" } : doesntApply("no TypeScript");
+  }
   const r = runTypecheck(root, { timeoutMs: 240000, env: { CI: "1" } });
   // Local audits can note this. A gate that was given a tsconfig can't pass without checking it.
   if (r.status === "skipped") return gate ? { status: "failed", reason: r.reason } : { skipped: r.reason };
@@ -126,7 +151,10 @@ tool("typecheck", () => {
   const unreadable = r.findings && errors === 0;
   const status = unreadable ? "failed" : r.status;
   summary.metrics.typeErrors = errors > 0 ? errors : status === "ok" ? 0 : null;
-  summary.metrics.tsStrict = readJsonc(join(root, "tsconfig.json"))?.compilerOptions?.strict === true;
+  // Set in a config this one extends, or in the ones it references, isn't visible from here. Unknown isn't off.
+  const tsconfig = readJsonc(join(root, "tsconfig.json"));
+  const strict = tsconfig?.compilerOptions?.strict;
+  summary.metrics.tsStrict = strict === undefined && (!tsconfig || tsconfig.extends || tsconfig.references) ? null : strict === true;
   return { status, ...(status === "ok" ? {} : { reason: r.reason || "typecheck failed with no recognisable errors" }), code: r.code, errors };
 });
 
@@ -159,7 +187,10 @@ tool("boundaries", () => {
     summary.metrics.boundaryViolations = (r.output.match(/^\s*(error|warn)\s/gm) || []).length;
     return { code: r.code, mode: "depcruise" };
   }
-  if (offline || !srcFiles.some((f) => /\.(t|j)sx?$/.test(f))) return { skipped: "no depcruise config" };
+  if (!files.some((f) => JS_FILE.test(f))) return doesntApply("no JavaScript or TypeScript");
+  // madge only reads the extensions below, so a project of .mjs or .vue files is out of its reach.
+  if (!srcFiles.some((f) => /\.(t|j)sx?$/.test(f))) return { skipped: "no depcruise config, and madge can't read these file types" };
+  if (offline) return { skipped: "no depcruise config" };
   const tsConfig = existsSync(join(root, "tsconfig.json")) ? ["--ts-config", "tsconfig.json"] : [];
   // madge exits 1 when it finds cycles.
   const r = npx("madge", ["--circular", "--extensions", "ts,tsx,js,jsx", ...tsConfig, ...srcDirs], { isFindings: ({ output }) => /Found \d+ circular/.test(output) });
@@ -174,7 +205,10 @@ tool("boundaries", () => {
 
 // ---------- Dead code / unused deps & exports ----------
 tool("knip", () => {
-  if (offline || !existsSync(join(root, "package.json"))) return { skipped: offline ? "offline" : "no package.json" };
+  if (!existsSync(join(root, "package.json"))) {
+    return anyFile(/(^|\/)package\.json$/) ? { skipped: "no package.json at the root" } : doesntApply("no package.json");
+  }
+  if (offline) return { skipped: "offline" };
   const r = npx("knip", ["--reporter", "json", "--no-exit-code"], { timeout: 300000 });
   save("knip.json", r.stdout);
   if (r.status !== "ok") { save("knip.txt", r.output); return didNotFinish(r); }
@@ -240,7 +274,7 @@ tool("vulnerabilities", () => {
   }
   const lock = pm.lockfile;
   if (!lock) {
-    const other = ["Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "gradle.lockfile", "packages.lock.json"].find((l) => existsSync(join(root, l)));
+    const other = summary.metrics.lockfile.name;
     if (other) return { skipped: `${other}: dependency audit not assessed (osv-scanner covers this ecosystem)`, ...extra };
     return { skipped: "no lockfile (audit impossible — that itself is a finding)", ...extra };
   }
@@ -278,11 +312,14 @@ tool("semgrep", () => {
   return { code: r.code };
 });
 tool("gitleaks", () => {
+  if (!isGit) return doesntApply("not a git repo");
   if (!onPath("gitleaks")) return { skipped: "gitleaks not installed (brew install gitleaks to scan git history)" };
-  if (!isGit) return { skipped: "not a git repo" };
+  if (headBroken) return { status: "failed", reason: "git couldn't read HEAD, so the history can't be scanned" };
+  if (!summary.commit) return doesntApply("no commits to scan");
   // It exits 0 after scanning nothing, so a clean result only counts if there was history to scan.
-  const commits = +run("git", ["rev-list", "--count", "HEAD"]).stdout.trim() || 0;
-  if (!commits) return { skipped: "no commits to scan" };
+  const count = run("git", ["rev-list", "--count", "HEAD"]);
+  const commits = +count.stdout.trim() || 0;
+  if (count.code !== 0 || !commits) return { status: "failed", reason: `git couldn't count the commits to scan (exit code ${count.code})` };
   const report = join(out, "gitleaks.json");
   rmSync(report, { force: true }); // a report left by an earlier run must not pass for this one
   // Exits 1 for leaks and for most crashes, so only a report it just wrote tells them apart.
@@ -430,6 +467,8 @@ tool("exceptions", () => {
   openSecrets = open.filter((f) => f.rule !== "env-file");
   openEnvFiles = open.filter((f) => f.rule === "env-file");
   summary.metrics.exceptions = report;
+  summary.metrics.secrets = { open: openSecrets.length, accepted: secretFindings.length - openSecrets.length };
+  summary.metrics.envFilesOpen = openEnvFiles.map((f) => f.file);
   if (loaded.problems.length) return { status: "failed", reason: `${EXCEPTIONS_FILE}: ${loaded.problems.join("; ")}` };
   return { applied: report.applied.length, expired: report.expired.length };
 });
@@ -438,7 +477,7 @@ tool("exceptions", () => {
 tool("hotspots", () => {
   const big = Object.entries(lineCounts).filter(([f]) => !isTest(f)).sort((a, b) => b[1] - a[1]);
   summary.metrics.largeFiles = { over400: big.filter(([, n]) => n > 400).length, over800: big.filter(([, n]) => n > 800).length, top: big.slice(0, 12).map(([f, n]) => `${n}  ${f}`) };
-  if (!isGit) return { skipped: "not a git repo" };
+  if (!isGit) return doesntApply("not a git repo");
   const log = run("git", ["log", "-z", "--since=6 months ago", "--name-only", "--format="]).stdout.split("\0").map((f) => f.trim()).filter(Boolean);
   const churn = {}; for (const f of log) if (lineCounts[f]) churn[f] = (churn[f] || 0) + 1;
   const hot = Object.entries(churn).map(([f, c]) => [f, c, lineCounts[f], c * lineCounts[f]]).sort((a, b) => b[3] - a[3]).slice(0, 15);
@@ -446,7 +485,29 @@ tool("hotspots", () => {
   save("hotspots.txt", summary.metrics.hotspots.join("\n"));
   const commits = run("git", ["rev-list", "--count", "HEAD"]).stdout.trim();
   summary.metrics.git = { commits: +commits || 0, uncommittedFiles: run("git", ["status", "--porcelain"]).stdout.split("\n").filter(Boolean).length };
+  // The auditors have no shell, so the history they judge is captured for them.
+  save("git-log.txt", `${run("git", ["log", "--oneline", "-30"]).stdout}\n## Size of recent commits\n${run("git", ["log", "--shortstat", "--format=%h %s", "-15"]).stdout}`);
   return { hot: hot.length };
+});
+
+// ---------- What changed since the last full audit (for --since-last) ----------
+tool("sinceLast", () => {
+  const path = resolve(root, baselineArg);
+  if (!existsSync(path)) return { skipped: "no previous audit" };
+  if (!isGit) return { skipped: "not a git repo" };
+  let base;
+  try { base = JSON.parse(readFileSync(path, "utf8")); } catch { return { status: "failed", reason: `${baselineArg} isn't readable JSON` }; }
+  if (!base.commit) return { skipped: "the previous audit recorded no commit" };
+  // From a file in the repo and about to reach git as an argument, so it must look like a SHA.
+  if (!/^[0-9a-f]{7,64}$/.test(base.commit)) return { status: "failed", reason: `${baselineArg} has an invalid commit` };
+  if (run("git", ["cat-file", "-e", `${base.commit}^{commit}`]).code !== 0) return { status: "failed", reason: `commit ${base.commit.slice(0, 8)} isn't in this repo's history` };
+  const diff = run("git", ["diff", "--name-only", "--no-renames", "-z", base.commit]);
+  const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (diff.code !== 0 || untracked.code !== 0) return { status: "failed", reason: "git couldn't list the changes" };
+  const changed = [...new Set([...diff.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean))].sort();
+  save("changed-since-last.txt", changed.join("\n"));
+  summary.metrics.sinceLast = { commit: base.commit, changedFiles: changed.length };
+  return { changedFiles: changed.length };
 });
 
 // ---------- Tests ----------
