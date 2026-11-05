@@ -28,6 +28,7 @@ function score(root, { summary = summaryOf(), input = {} } = {}) {
   const path = join(root, ".audit", "score.json");
   return { code: r.status, output: r.stdout + r.stderr, score: r.status === 0 ? JSON.parse(readFileSync(path, "utf8")) : null };
 }
+const FUTURE = new Date(Date.now() + 100 * 864e5).toISOString().slice(0, 10);
 const latest = (root) => JSON.parse(readFileSync(join(root, "docs/audits/latest.json"), "utf8"));
 const history = (root) => readFileSync(join(root, "docs/audits/history.csv"), "utf8").trim().split("\n");
 
@@ -433,7 +434,7 @@ describe("score: refuses a broken contract", () => {
   });
 
   test("a bad risk entry", () => {
-    const root = project({ ".audit-exceptions.json": JSON.stringify({ risks: [{ rule: "xss", path: "src/a.ts", expires: "2999-01-01" }] }) });
+    const root = project({ ".audit-exceptions.json": JSON.stringify({ risks: [{ rule: "xss", path: "src/a.ts", expires: FUTURE }] }) });
     const r = score(root);
     assert.equal(r.code, 2);
     assert.match(r.output, /reason is required/);
@@ -711,7 +712,7 @@ describe("score: strengths and accepted risks (item 15)", () => {
   });
 
   const SOURCE = { "src/a.ts": "1\n", "src/b.ts": "1\n", "lib/pay.ts": "1\n" };
-  const risks = (entry) => ({ ...SOURCE, ".audit-exceptions.json": JSON.stringify({ risks: [{ rule: "no-auth-rate-limit", path: "src/**", reason: "Behind a WAF", expires: "2999-01-01", ...entry }] }) });
+  const risks = (entry) => ({ ...SOURCE, ".audit-exceptions.json": JSON.stringify({ risks: [{ rule: "no-auth-rate-limit", path: "src/**", reason: "Behind a WAF", expires: FUTURE, ...entry }] }) });
   const capped = finding({ rule: "no-auth-rate-limit", severity: "high" });
 
   test("an accepted risk stays listed and stops counting", () => {
@@ -800,7 +801,7 @@ describe("score: strengths and accepted risks (item 15)", () => {
     });
 
     test("is accepted when two risks cover its locations between them", () => {
-      const both = { ...SOURCE, ".audit-exceptions.json": JSON.stringify({ risks: ["src/**", "lib/**"].map((path) => ({ rule: "no-auth-rate-limit", path, reason: "Behind a WAF", expires: "2999-01-01" })) }) };
+      const both = { ...SOURCE, ".audit-exceptions.json": JSON.stringify({ risks: ["src/**", "lib/**"].map((path) => ({ rule: "no-auth-rate-limit", path, reason: "Behind a WAF", expires: FUTURE })) }) };
       assert.equal(status(both, "src/a.ts:1, lib/pay.ts:9").findings[0].status, "accepted");
     });
   });
@@ -846,5 +847,72 @@ describe("score: coverage gaps beside the grade", () => {
     const r = score(project(), { summary: summaryOf({ tools: skipped }), input: { mode: "reliability", anchors: { reliability: { score: 8 } } } });
     assert.equal(r.score.coverageGaps, 1);
     assert.match(r.output, /1 coverage gap\b/);
+  });
+});
+
+describe("score: PR 6", () => {
+  const pr6 = {};
+
+  for (const rule of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    test(`"${rule}" isn't a rule, though every object has it`, pr6, () => {
+      const r = score(project(), { input: { findings: [finding({ rule })] } });
+      assert.equal(r.code, 2, r.output);
+      assert.match(r.output, /rules\.json/);
+      assert.doesNotMatch(r.output, /NaN/);
+    });
+  }
+
+  describe("a finding the verifier downgrades to possible", () => {
+    const run = (root, confidence) => score(root, { input: { findings: [finding({ confidence })] } }).score;
+
+    test("isn't reported as fixed", pr6, () => {
+      const root = project();
+      run(root, "confirmed");
+      const { comparison: c, appendix } = run(root, "possible");
+      assert.deepEqual(c.fixed, []);
+      assert.deepEqual(c.downgraded, ["SEC-001"]);
+      assert.equal(appendix[0].id, "SEC-001");
+    });
+
+    test("isn't closed in the baseline, and keeps its id when it counts again", pr6, () => {
+      const root = project();
+      run(root, "confirmed");
+      run(root, "possible");
+      assert.deepEqual(latest(root).closed, []);
+      assert.equal(latest(root).appendix[0].id, "SEC-001");
+      const third = run(root, "likely");
+      assert.equal(third.findings[0].id, "SEC-001");
+    });
+  });
+
+  test("a summary copied into another clone is checked against that clone's HEAD", pr6, () => {
+    const original = gitInit(project({ "a.ts": "1\n" }));
+    gitCommitAll(original);
+    const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: original, encoding: "utf8" }).stdout.trim();
+    const clone = gitInit(project({ "a.ts": "2\n" }));
+    gitCommitAll(clone);
+    const r = score(clone, { summary: summaryOf({ commit, root: original }) });
+    assert.equal(r.code, 2, r.output);
+    assert.match(r.output, /run collect\.mjs again/);
+    assert.ok(!existsSync(join(original, "docs")), "wrote into the other clone");
+  });
+
+  test("a broken package.json can't rule out no-lockfile", pr6, () => {
+    const r = score(project(), { summary: summaryOf({ metrics: { lockfile: { hasDependencies: null, name: null } } }), input: { anchors: anchors(10) } });
+    const t = r.score.categories.tooling;
+    assert.equal(t.score, 4);
+    assert.equal(t.limits.find((l) => l.id === "no-lockfile").source, "not-ruled-out");
+  });
+
+  test("strictness that can't be read is a gap", pr6, () => {
+    const r = score(project(), { summary: summaryOf({ tools: { strict: tool("skipped", { skipped: "extends @tsconfig/strictest, which isn't installed" }) }, metrics: { tsStrict: null } }), input: { anchors: anchors(10) } });
+    const m = r.score.categories.maintainability;
+    assert.equal(m.score, 10);
+    assert.match(m.gaps.join(), /strict: skipped/);
+  });
+
+  test("a tsconfig that can't be parsed can't rule out strict-off", pr6, () => {
+    const r = score(project(), { summary: summaryOf({ tools: { strict: tool("failed", { reason: "tsconfig.json isn't valid JSON" }) }, metrics: { tsStrict: null } }), input: { anchors: anchors(10) } });
+    assert.equal(r.score.categories.maintainability.limits.find((l) => l.id === "strict-off").source, "not-ruled-out");
   });
 });

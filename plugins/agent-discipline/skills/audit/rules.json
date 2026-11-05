@@ -6,7 +6,7 @@
     { "id": "secret-in-history", "category": "security", "max": 5, "tools": ["gitleaks"] },
     { "id": "tests-failing", "category": "reliability", "max": 5, "tools": ["tests"] },
     { "id": "type-errors", "category": "maintainability", "max": 6, "tools": ["typecheck"] },
-    { "id": "strict-off", "category": "maintainability", "max": 7, "tools": ["typecheck"] },
+    { "id": "strict-off", "category": "maintainability", "max": 7, "tools": ["strict"] },
     { "id": "many-cycles-or-violations", "category": "maintainability", "max": 6, "tools": ["boundaries"] },
     { "id": "duplication-over-8", "category": "maintainability", "max": 6, "tools": ["duplication"] },
     { "id": "duplication-over-4", "category": "maintainability", "max": 8, "tools": ["duplication"] },

@@ -74,7 +74,7 @@ Severity guide: **critical** means it's exploitable or causes data loss now. **h
 ## 4. Verify
 - Merge all arrays and dedupe by `rule + location`, and by title too for `other-*` rules, since those cover many problems (keep the richer one). A project agent's findings need a rule from `rules.json` too, so map them.
 - Launch `agent-discipline:audit-verifier` with every **critical, high and medium** finding. It tries to *disprove* each one: it checks reachability, mitigations elsewhere (middleware, validation layer, framework defaults) and whether the code is test-only. Apply its verdicts: remove dropped findings, set the final severity and confidence on the rest, and add `"verified": true`.
-- Findings that are still `possible` after verification go in the appendix and don't affect scores. An auditor's own `possible` doesn't skip this step: `score.mjs` refuses any unverified critical, high or medium. Lows aren't verified, and they only inform your anchor: they fire no caps.
+- Findings that are still `possible` after verification go in the appendix and don't affect scores. An auditor's own `possible` doesn't skip this step: `score.mjs` refuses any unverified critical, high or medium. Lows aren't verified, and they only inform your anchor: they fire no caps. A finding the verifier downgrades to `possible` keeps its id, and `comparison.downgraded` lists it: report it as downgraded, never as fixed.
 
 ## 5. Score
 Read `rubric.md` and choose an anchor for each category. That judgment is yours; everything else is computed. Write `.audit/scoring.json`:

@@ -29,16 +29,16 @@ If a tool **failed or timed out**, it can't rule its caps out, so they apply. If
 
 **Maintainability & reusability**
 - `type-errors` → max 6: type errors present
-- `strict-off` → max 7: `strict` off in a TypeScript project
+- `strict-off` → max 7: `strict` off in a TypeScript project, read through `extends` and project references. A config that can't be parsed applies this cap. One that extends a package that isn't installed is a coverage gap.
 - `many-cycles-or-violations` → max 6: more than 5 circular dependencies or boundary violations
 - `duplication-over-8` → max 6: duplication above 8%
 - `duplication-over-4` → max 8: duplication above 4%
 - `many-huge-files` → max 6: more than 3 non-test source files over 800 lines
 
 **Tooling**
-- `no-lockfile` → max 4: `package.json` declares dependencies with no lockfile
+- `no-lockfile` → max 4: `package.json` declares dependencies with no lockfile. A `package.json` that can't be parsed applies this cap, because it may list dependencies.
 - `env-file-with-secrets` → max 4: a tracked `.env` file counted as a leak
-- `no-ci` → max 6: no CI configuration
+- `no-ci` → max 6: no CI configuration from any of the systems `collect.mjs` knows (GitHub, GitLab, CircleCI, Jenkins, Azure, Bitbucket, Travis, Buildkite and others; `inventory.ci` names the ones found)
 - `no-claude-md` → max 7: no `CLAUDE.md` or `AGENTS.md` at the root
 
 ## Hard caps from findings (fire when a counted finding of medium severity or above uses the rule)

@@ -137,7 +137,7 @@ describe("collect", () => {
     const binDir = join(root, "fake-path");
     fakeBin(binDir, "npx", "exit 0");
     const skipped = collect(root, ["--no-tests"], { binDir }).summary.skipped.join("\n");
-    assert.match(skipped, /Cargo\.lock: dependency audit not assessed/);
+    assert.match(skipped, /Cargo\.lock has no built-in audit here: install osv-scanner/);
     assert.doesNotMatch(skipped, /no lockfile/);
   });
 

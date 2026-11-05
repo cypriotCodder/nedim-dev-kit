@@ -34,7 +34,7 @@ const MODES = ["full", "quick", "since-last", ...CATEGORIES];
 const TOOL_CATEGORY = {
   patterns: "security", exceptions: "security", gitleaks: "security", semgrep: "security", vulnerabilities: "security",
   tests: "reliability",
-  typecheck: "maintainability", eslint: "maintainability", boundaries: "maintainability", knip: "maintainability", duplication: "maintainability", hotspots: "maintainability",
+  typecheck: "maintainability", strict: "maintainability", eslint: "maintainability", boundaries: "maintainability", knip: "maintainability", duplication: "maintainability", hotspots: "maintainability",
   git: "tooling",
 };
 const BROKEN = ["failed", "timed-out"];
@@ -42,7 +42,8 @@ const BROKEN = ["failed", "timed-out"];
 const HISTORY_OLD = "date,overall,security,reliability,performance,maintainability,tooling,critical,high,medium,low";
 const HISTORY_HEADER = `${HISTORY_OLD},commit,rubricVersion`;
 
-// What each measurable cap looks for. Returns a description when it fires.
+// What each measurable cap looks for. Returns a description when it fires, or { unknown } when the
+// evidence it needs is broken.
 const METRIC_CHECKS = {
   "secret-in-repo": (m) => m.secrets?.open > 0 && `${m.secrets.open} open secret finding(s)`,
   "secret-in-history": (m) => m.secretsInHistory > 0 && `${m.secretsInHistory} secret(s) in git history`,
@@ -56,7 +57,9 @@ const METRIC_CHECKS = {
   "duplication-over-8": (m) => m.duplication?.percentage > 8 && `${m.duplication.percentage}% duplication`,
   "duplication-over-4": (m) => m.duplication?.percentage > 4 && `${m.duplication.percentage}% duplication`,
   "many-huge-files": (m) => m.largeFiles?.over800 > 3 && `${m.largeFiles.over800} files over 800 lines`,
-  "no-lockfile": (m) => m.lockfile?.hasDependencies && !m.lockfile.name && "dependencies with no lockfile",
+  // A broken package.json hides whether there's anything to lock, which doesn't rule this out.
+  "no-lockfile": (m) => !m.lockfile?.name && (m.lockfile?.hasDependencies ? "dependencies with no lockfile"
+    : m.lockfile?.hasDependencies === null && { unknown: "package.json couldn't be read" }),
   "env-file-with-secrets": (m) => m.envFilesOpen?.length > 0 && `tracked: ${m.envFilesOpen.join(", ")}`,
   "no-ci": (m) => m.inventory?.hasCI === false && "no CI configuration",
   "no-claude-md": (m) => m.inventory?.claudeSetup && !m.inventory.claudeSetup.some((f) => /^(CLAUDE|AGENTS)\.md$/.test(f)) && "no CLAUDE.md or AGENTS.md at the root",
@@ -75,7 +78,12 @@ const readJson = (path, what) => {
 
 const input = readJson(inputPath, "scoring input");
 const summary = readJson(summaryPath, "evidence summary");
-const ROOT = realpathSync(existsSync(summary.root ?? "") ? summary.root : process.cwd());
+// summary.root counts only when the summary or the current folder is inside it. A summary copied into
+// another clone still names the clone it came from, and that clone's HEAD says nothing about this one.
+const inside = (dir, path) => { const rel = relative(dir, path); return !rel.startsWith("..") && !isAbsolute(rel); };
+const recordedRoot = existsSync(summary.root ?? "") ? realpathSync(summary.root) : null;
+const ROOT = recordedRoot && (inside(recordedRoot, realpathSync(summaryPath)) || inside(recordedRoot, realpathSync(process.cwd())))
+  ? recordedRoot : realpathSync(process.cwd());
 const auditDir = resolve(ROOT, opt("--dir", "docs/audits"));
 const previous = existsSync(join(auditDir, "latest.json")) ? readJson(join(auditDir, "latest.json"), "previous latest.json") : null;
 
@@ -174,7 +182,8 @@ const seen = new Set();
 for (const f of Array.isArray(findings) ? findings : []) {
   const label = `${f?.rule} at ${f?.location}`;
   if (!CATEGORIES.includes(f?.category)) { problems.push(`${label}: unknown category "${f?.category}"`); continue; }
-  if (!(f.rule in RULES[f.category])) problems.push(`${label}: not a ${f.category} rule in rules.json (use other-${f.category} if nothing fits)`);
+  // Own keys only: every object has `constructor`, and its "cap" would be a function (NaN/10).
+  if (!Object.hasOwn(RULES[f.category], f.rule)) problems.push(`${label}: not a ${f.category} rule in rules.json (use other-${f.category} if nothing fits)`);
   if (!SEVERITIES.includes(f.severity)) problems.push(`${label}: unknown severity "${f.severity}"`);
   if (!CONFIDENCES.includes(f.confidence)) problems.push(`${label}: unknown confidence "${f.confidence}"`);
   if (typeof f.location !== "string" || !locationParts(f.location).length) problems.push(`${f.rule}: location is required`);
@@ -197,7 +206,8 @@ if (problems.length) refuse(problems);
 // ---------- Finding ids: the same problem keeps its id between audits ----------
 const identity = (f) => `${f.rule}|${fileOf(f.location || f.file || "")}${titleIfOther(f)}`;
 
-const previousEntries = [...(previous?.findings || []), ...(previous?.closed || [])].filter((f) => f.id);
+// The appendix too: a finding the verifier only called possible keeps its id for when it counts again.
+const previousEntries = [...(previous?.findings || []), ...(previous?.appendix || []), ...(previous?.closed || [])].filter((f) => f.id);
 const unclaimed = new Map();
 for (const f of previousEntries) {
   const k = identity(f);
@@ -223,7 +233,6 @@ const riskFor = (f) => {
 };
 
 const counted = findings.filter((f) => f.confidence !== "possible");
-const appendix = findings.filter((f) => f.confidence === "possible");
 const results = counted.map((f) => {
   const match = unclaimed.get(identity(f))?.shift();
   const risk = riskFor(f);
@@ -232,6 +241,12 @@ const results = counted.map((f) => {
     ...(risk ? { accepted: { reason: risk.reason, expires: risk.expires } } : {}),
     previous: match,
   };
+});
+// After the counted findings, which claim ids first. Matched to earlier findings but never given a
+// new id: an unconfirmed problem shouldn't use up a number.
+const appendix = findings.filter((f) => f.confidence === "possible").map((f) => {
+  const match = unclaimed.get(identity(f))?.shift();
+  return { ...f, ...(match ? { id: match.id } : {}), file: fileOf(f.location), status: "possible", previous: match };
 });
 const live = results.filter((f) => f.status === "open");
 
@@ -264,7 +279,8 @@ function limitsFor(category) {
     const fired = METRIC_CHECKS[cap.id](metrics);
     // A tool that broke can't rule this cap out, so it applies. A skipped tool is only reported as
     // a gap: skipping is often the right call, as with tests that aren't safe to run locally.
-    if (fired) limits.push({ id: cap.id, max: cap.max, source: "metric", detail: fired });
+    if (fired?.unknown) limits.push({ id: cap.id, max: cap.max, source: "not-ruled-out", detail: fired.unknown });
+    else if (fired) limits.push({ id: cap.id, max: cap.max, source: "metric", detail: fired });
     else if (broken) limits.push({ id: cap.id, max: cap.max, source: "not-ruled-out", detail: `${broken} didn't finish` });
   }
   return limits.sort((a, b) => a.max - b.max);
@@ -309,9 +325,11 @@ function compare() {
     // Scores moved because the scale did, and old rule names don't match, so nothing here is a trend.
     return { previousDate: previous.date, comparable: false, reason: `the previous audit used rubric ${previousRubric}, this one ${RUBRIC}` };
   }
-  const present = new Set(results.map((f) => f.id));
+  // A finding now in the appendix is still there, only unconfirmed, so it isn't absent.
+  const present = new Set([...results, ...appendix].map((f) => f.id));
   const before = previous.findings || [];
   const wasOpen = (f) => f.status !== "fixed" && f.status !== "gone";
+  const wasCounted = (f) => f && f.status !== "possible";
   const absent = before.filter((f) => wasOpen(f) && !present.has(f.id)).map((f) => f.id);
   // fix-findings marks these with a test to prove it, so they're fixed whatever this run looked at.
   const markedFixed = before.filter((f) => f.status === "fixed" && !present.has(f.id)).map((f) => f.id);
@@ -324,9 +342,10 @@ function compare() {
   return {
     previousDate: previous.date, comparable: true, deltas,
     overallDelta: overall != null && typeof previous.overall === "number" ? +(overall - previous.overall).toFixed(1) : null,
-    new: results.filter((f) => !f.previous).map((f) => f.id),
-    stillOpen: results.filter((f) => f.previous && wasOpen(f.previous)).map((f) => f.id),
-    reopened: results.filter((f) => f.previous && !wasOpen(f.previous)).map((f) => f.id),
+    new: results.filter((f) => !wasCounted(f.previous)).map((f) => f.id),
+    stillOpen: results.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
+    reopened: results.filter((f) => wasCounted(f.previous) && !wasOpen(f.previous)).map((f) => f.id),
+    downgraded: appendix.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
     fixed: [...markedFixed, ...(rechecked ? absent : [])],
     notRechecked: rechecked ? [] : absent,
   };
@@ -340,7 +359,7 @@ const output = {
   overall, grade, overallCapped, coverageGaps: gaps.length, counts, categories,
   comparison: compare(),
   findings: results.map(clean).sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)),
-  strengths, appendix,
+  strengths, appendix: appendix.map(clean),
   expiredRisks: risks.expired.map(({ rule, path, reason, expires }) => ({ rule, path, reason, expires })),
 };
 
@@ -370,14 +389,14 @@ const history = isFull ? historyWith(row) : null; // before any write: this can 
 
 writeAtomic(join(dirname(inputPath), "score.json"), `${JSON.stringify(output, null, 2)}\n`);
 if (isFull) {
-  const presentIds = new Set(results.map((f) => f.id));
+  const presentIds = new Set([...results, ...appendix].map((f) => f.id));
   // Kept so a problem that comes back gets its old id, and no id is ever given to something else.
   const closed = previousEntries
     .filter((f) => !presentIds.has(f.id))
     .map((f) => ({ id: f.id, rule: f.rule, file: f.file || fileOf(f.location || ""), title: f.title, status: f.status === "fixed" ? "fixed" : "gone" }));
   writeAtomic(join(auditDir, "latest.json"), `${JSON.stringify({
     date, commit: output.commit, uncommittedFiles: output.uncommittedFiles, rubricVersion: RUBRIC, mode,
-    overall, grade, scores: categories, counts, findings: output.findings, strengths, closed,
+    overall, grade, scores: categories, counts, findings: output.findings, appendix: output.appendix, strengths, closed,
   }, null, 2)}\n`);
   writeAtomic(join(auditDir, "history.csv"), history);
 }
@@ -395,5 +414,6 @@ console.log(isFull
   : `Partial audit: no overall score${gapCount && `, ${gapCount}`}.`);
 if (gaps.length) console.log(`Coverage gaps: ${gaps.join("; ")}`);
 console.log(`Findings: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}; ${results.length - live.length} accepted; ${appendix.length} in the appendix`);
+if (output.comparison.downgraded?.length) console.log(`Downgraded to possible, so in the appendix and not fixed: ${output.comparison.downgraded.join(", ")}`);
 if (applicable.length !== CATEGORIES.length) console.log(`Not applicable: ${CATEGORIES.filter((c) => !applicable.includes(c)).join(", ")}`);
 console.log(isFull ? `Baseline written to ${auditDir}` : "Baseline not written: only a full audit replaces it.");

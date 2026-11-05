@@ -28,9 +28,9 @@ Monthly (or before a release): **audit → fix-findings batch-0 → audit --sinc
 
 Only a full audit replaces `latest.json` and `history.csv`. `quick`, single-category and `--since-last` runs write a dated report and leave the baseline alone. The audit doesn't commit until you say so.
 
-CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, high/critical vulnerable deps, leaked keys, secrets in git history, a tracked `.env` or `.env.local` (or another `.env.*` file holding a secret), failing tests, or any of those checks failing to finish. The workflow template is in `skills/audit/templates/audit-ci.yml`.
+CI gate: `node scripts/audit/collect.mjs . --gate` fails on type errors, high/critical vulnerable deps (from the package manager's audit or osv-scanner), leaked keys, secrets in git history, a tracked `.env` or `.env.local` (or another `.env.*` file holding a secret), failing tests, or any of those checks failing to finish. It also fails when there are dependencies nothing could audit (no lockfile, or a `bun.lock` or `Cargo.lock` without osv-scanner), and when gitleaks isn't installed in CI. A pass lists what it didn't assess, such as the dependency audit under `--offline`. The workflow template is in `skills/audit/templates/audit-ci.yml`, and it checks gitleaks against a pinned checksum. To give every tool less time than its default, set `AGENT_DISCIPLINE_TOOL_TIMEOUT_MS`.
 
-To accept a secret finding, such as a fake key in a fixture, commit an `.audit-exceptions.json`. Each entry needs a reason and an expiry date, and an entry the gate can't read fails it:
+To accept a secret finding, such as a fake key in a fixture, commit an `.audit-exceptions.json`. Each entry needs a reason and an expiry date at most a year ahead, and an entry the gate can't read fails it. `path` is relative to the project, and must name a folder or file: `**/*.ts` matches every TypeScript file, so it's refused. Entries that match nothing are printed.
 
 ```json
 { "exceptions": [
