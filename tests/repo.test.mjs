@@ -91,3 +91,116 @@ describe("audit CI template", () => {
     assert.match(template, /^permissions:\n\s+contents: read/m);
   });
 });
+
+const frontmatter = (text) => text.match(/^---\n([\s\S]*?)\n---/)[1];
+const rulesFile = json(PLUGIN, "skills", "audit", "rules.json");
+
+describe("version stamp", () => {
+  test("KIT_VERSION matches plugin.json", () => {
+    const { version } = json(PLUGIN, ".claude-plugin", "plugin.json");
+    assert.match(read(PLUGIN, "skills", "audit", "lib", "version.mjs"), new RegExp(`KIT_VERSION = "${version}"`));
+  });
+});
+
+describe("rubric and rules.json stay in step", () => {
+  const rubric = read(PLUGIN, "skills", "audit", "rubric.md");
+
+  test("the rubric names the version in rules.json", () => {
+    assert.match(rubric, new RegExp(`\\(version ${rulesFile.rubricVersion}\\)`));
+  });
+
+  test("every capped rule appears in the rubric with its number", () => {
+    for (const rules of Object.values(rulesFile.rules)) {
+      for (const [id, max] of Object.entries(rules)) {
+        if (max !== null) assert.ok(rubric.includes(`\`${id}\` → max ${max}`), id);
+      }
+    }
+  });
+
+  test("every metric cap appears in the rubric with its number", () => {
+    for (const { id, max } of rulesFile.metricCaps) assert.ok(rubric.includes(`\`${id}\` → max ${max}`), id);
+  });
+
+  test("the rubric has no cap that rules.json doesn't", () => {
+    const known = new Map([...Object.values(rulesFile.rules).flatMap((r) => Object.entries(r)), ...rulesFile.metricCaps.map((c) => [c.id, c.max])]);
+    for (const [, id, max] of rubric.matchAll(/`([a-z0-9-]+)` → max (\d+)/g)) assert.equal(known.get(id), +max, id);
+  });
+
+  test("every category has an other- rule for what fits nothing else", () => {
+    for (const [category, rules] of Object.entries(rulesFile.rules)) assert.ok(`other-${category}` in rules, category);
+  });
+
+  test("the weights add up to 100", () => {
+    assert.equal(Object.values(rulesFile.weights).reduce((a, b) => a + b), 100);
+  });
+});
+
+describe("read-only agents (item 16)", () => {
+  const AGENTS = ["audit-verifier", "maintainability-auditor", "performance-auditor", "reliability-auditor", "security-auditor", "tooling-auditor"];
+
+  test("auditors have no shell, because they read untrusted repo content", () => {
+    for (const a of AGENTS) assert.match(frontmatter(read(PLUGIN, "agents", `${a}.md`)), /^tools: Read, Grep, Glob$/m, a);
+  });
+
+  test("nothing tells an auditor to use a shell it no longer has", () => {
+    for (const a of AGENTS) assert.doesNotMatch(read(PLUGIN, "agents", `${a}.md`), /\bBash\b|`git log|read-only commands/, a);
+  });
+
+  test("auditors report strengths separately", () => {
+    for (const a of AGENTS.filter((x) => x !== "audit-verifier")) {
+      const text = read(PLUGIN, "agents", `${a}.md`);
+      assert.match(text, /"strengths"/, a);
+      assert.doesNotMatch(text, /GOOD:/, a);
+    }
+  });
+});
+
+describe("skill triggers (item 23)", () => {
+  const skill = (name) => read(PLUGIN, "skills", name, "SKILL.md");
+
+  test("audit and bootstrap run only when asked for", () => {
+    for (const name of ["audit", "bootstrap"]) assert.match(frontmatter(skill(name)), /^disable-model-invocation: true$/m, name);
+  });
+
+  test("checkpoint stays callable, because spec and fix-findings call it", () => {
+    assert.doesNotMatch(frontmatter(skill("checkpoint")), /disable-model-invocation/);
+  });
+
+  test("checkpoint doesn't fire on everyday phrases", () => {
+    const description = frontmatter(skill("checkpoint"));
+    assert.doesNotMatch(description, /wrap up|commit this/i);
+  });
+
+  test("design skills don't claim generic complaints about a UI", () => {
+    for (const name of ["design-system", "ui-review"]) assert.doesNotMatch(frontmatter(skill(name)), /(?<!non-)generic|vibe-coded|AI-made|feels off|not smooth/i, name);
+  });
+});
+
+describe("checkpoint order (item 21)", () => {
+  const text = read(PLUGIN, "skills", "checkpoint", "SKILL.md");
+
+  test("UI fixes happen before the checks and the review see the code", () => {
+    assert.ok(text.indexOf("ui-review") < text.indexOf("**Checks.**"));
+    assert.ok(text.indexOf("**Checks.**") < text.indexOf("code-reviewer"));
+  });
+
+  test("the scope check sees staged and new files, including those in new folders", () => {
+    assert.match(text, /git status --porcelain --untracked-files=all/);
+    assert.match(text, /git diff HEAD/);
+    assert.doesNotMatch(text, /`git diff --stat`/);
+  });
+});
+
+describe("audit skill contract", () => {
+  const text = read(PLUGIN, "skills", "audit", "SKILL.md");
+
+  test("verifies every medium, not a random sample (item 15)", () => {
+    assert.match(text, /every \*\*critical, high and medium\*\*/);
+    assert.doesNotMatch(text, /random/);
+  });
+
+  test("doesn't commit without asking, and commits .gitignore with the reports (item 24)", () => {
+    assert.match(text, /Don't commit anything yet/);
+    assert.match(text, /together with the `\.gitignore` change/);
+  });
+});

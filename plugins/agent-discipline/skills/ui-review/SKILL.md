@@ -1,6 +1,6 @@
 ---
 name: ui-review
-description: Screenshot-driven UI review loop — render the real pages at desktop and mobile widths, look at them, critique against DESIGN.md, fix the worst issues, and repeat. Use after any UI change, when building a new screen, or when the user says the UI feels off, generic, or not smooth.
+description: Screenshot-driven UI review loop — render the real pages at desktop and mobile widths, look at them, critique against DESIGN.md, fix the worst issues, and repeat. Use from checkpoint after a UI change in a project with a DESIGN.md, or when the user asks for a screenshot review.
 argument-hint: "[route or URL, e.g. /orders]"
 ---
 
@@ -18,8 +18,10 @@ Target: $ARGUMENTS (default: the routes touched in the current diff).
 1. Make sure the dev server is running (start it in the background if needed, using the command in CLAUDE.md). Build full URLs such as `http://localhost:3000/orders`.
 2. Capture the screenshots:
    `node ${CLAUDE_PLUGIN_ROOT}/skills/ui-review/screenshot.mjs <url...>`
-   Add `--dark` as well if DESIGN.md defines a dark theme.
-   The script also prints overflow, small hit targets, font families and console errors. Treat each of those as a finding.
+   Add `--dark` as well if DESIGN.md defines a dark theme. If the theme is class-based (Tailwind `dark:` with a class, for example), use `--dark-class dark` instead, with the class it uses.
+   For a route behind a login, pass `--auth <file>` with a Playwright storage state. That file holds a live session, so keep it out of git, and ask the user to create it rather than asking for their password.
+   The script also prints overflow, small hit targets (32px on desktop, 44px on mobile), font families, console errors and, if the project has `axe-core`, accessibility violations. Treat each of those as a finding. If it says `REDIRECTED`, those screenshots aren't of the page you asked for, so fix that before judging them.
+   Tall pages are saved as `.part1.png`, `.part2.png` and so on. Look at every part.
 3. Look at every PNG with the Read tool. Actually examine the images. Don't judge the UI from the code.
 4. Launch the `agent-discipline:design-critic` agent with the screenshot paths and the DESIGN.md path. It hasn't seen the code, so it judges only what a user sees.
 5. Fix the **top 3** findings by impact. Usually these are hierarchy, then spacing rhythm, then states. Don't try to fix everything in one round.

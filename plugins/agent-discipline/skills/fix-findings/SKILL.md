@@ -11,7 +11,7 @@ Target: $ARGUMENTS (default `batch-0`).
 Read `docs/audits/backlog.md` and `docs/audits/latest.json`. If they don't exist, tell the user to run `/agent-discipline:audit` first.
 
 ## Plan
-1. Resolve the target into a list of finding ids. Show each id with its title and effort, plus the files that will change. A batch with more than ~6 findings or any L-effort item becomes a spec via `/agent-discipline:spec`, with one slice per theme.
+1. Resolve the target into a list of finding ids, leaving out any with status `accepted` unless the user names them. Show each id with its title and effort, plus the files that will change. A batch with more than ~6 findings or any L-effort item becomes a spec via `/agent-discipline:spec`, with one slice per theme.
 2. Re-open each finding's location. If the code changed since the audit and the finding no longer applies, mark it `stale` and skip it.
 3. Branch: `fix/audit-<date>-<batch>`.
 

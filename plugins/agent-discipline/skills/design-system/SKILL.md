@@ -1,6 +1,6 @@
 ---
 name: design-system
-description: Create a distinctive, non-generic design system for a project — art direction from references, DESIGN.md, design tokens, motion system, banned defaults and a set of polished primitives. Use before building UI in a new project, or when the user says the UI looks generic, "AI-made", "vibe-coded", or not smooth.
+description: Create a distinctive, non-generic design system for a project — art direction from references, DESIGN.md, design tokens, motion system, banned defaults and a set of polished primitives. Use before building UI in a project that follows this kit, or when the user asks for a DESIGN.md.
 argument-hint: "[product name or vibe]"
 ---
 

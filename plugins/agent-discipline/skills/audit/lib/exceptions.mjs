@@ -15,9 +15,9 @@ const globToRegex = (glob) => new RegExp(`^${glob
 
 const validDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
 
-function problemWith(e) {
+function problemWith(e, rules = RULES) {
   if (!e || typeof e !== "object") return "not an object";
-  if (!RULES.includes(e.rule)) return `rule must be one of ${RULES.join(", ")}`;
+  if (!rules.includes(e.rule)) return rules === RULES ? `rule must be one of ${RULES.join(", ")}` : `unknown rule "${e.rule}"`;
   if (typeof e.path !== "string" || !e.path) return "path is required";
   if (globToRegex(e.path).test("any/folder/file.ts")) return "path matches everything";
   if (typeof e.reason !== "string" || !e.reason.trim()) return "reason is required";
@@ -32,18 +32,35 @@ export function loadExceptions(root, today = new Date().toISOString().slice(0, 1
   const none = (problems = []) => ({ problems, active: [], expired: [] });
   if (!existsSync(path)) return none();
   let entries;
-  try { entries = JSON.parse(readFileSync(path, "utf8")).exceptions; }
-  catch (e) { return none([`unreadable: ${e.message}`]); }
+  try {
+    const json = JSON.parse(readFileSync(path, "utf8"));
+    entries = json.exceptions ?? (Array.isArray(json.risks) ? [] : undefined); // a file may hold only risks
+  } catch (e) { return none([`unreadable: ${e.message}`]); }
   if (!Array.isArray(entries)) return none([`needs an "exceptions" list`]);
+  return sortEntries(entries, today);
+}
 
-  const result = none();
+function sortEntries(entries, today, rules) {
+  const result = { problems: [], active: [], expired: [] };
   entries.forEach((e, i) => {
-    const problem = problemWith(e);
+    const problem = problemWith(e, rules);
     if (problem) result.problems.push(`entry ${i + 1}: ${problem}`);
     else if (e.expires < today) result.expired.push(e);
     else result.active.push({ ...e, matches: globToRegex(e.path) });
   });
   return result;
+}
+
+// Audit findings a project has accepted, from the `risks` list in the same file. Same entry shape and
+// same rules as secret exceptions, with `rule` taken from rules.json. Read by score.mjs, not the gate.
+export function loadRisks(root, rules, today = new Date().toISOString().slice(0, 10)) {
+  const path = join(root, EXCEPTIONS_FILE);
+  if (!existsSync(path)) return { problems: [], active: [], expired: [] };
+  let entries;
+  try { entries = JSON.parse(readFileSync(path, "utf8")).risks ?? []; }
+  catch (e) { return { problems: [`unreadable: ${e.message}`], active: [], expired: [] }; }
+  if (!Array.isArray(entries)) return { problems: [`"risks" must be a list`], active: [], expired: [] };
+  return sortEntries(entries, today, rules);
 }
 
 const label = ({ rule, path, reason, expires }) => ({ rule, path, reason, expires });

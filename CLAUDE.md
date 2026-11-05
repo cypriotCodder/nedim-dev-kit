@@ -27,5 +27,8 @@ docs/DECISIONS.md                 why things are the way they are
 ## Gotchas
 - Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode` in their frontmatter.
 - `collect.mjs` and `skills/audit/lib/` get copied together into user projects for the CI gate, so `lib/` can't import from elsewhere in the plugin.
+- `KIT_VERSION` in `skills/audit/lib/version.mjs` must match `plugin.json`. A test checks it.
+- Changing a cap, weight or rule in `skills/audit/rules.json` means raising `rubricVersion`, or trend lines compare different scales.
+- Auditors and the verifier have no Bash, so anything they need from git has to be captured by `collect.mjs`.
 - `git status --porcelain` shows a new folder as `?? src/`, not its files. Fixtures need a committed file in the folder, or changes look absent.
 - Tests that need real compilers are skipped until `npm run test:install-ts` has run. CI always runs it.

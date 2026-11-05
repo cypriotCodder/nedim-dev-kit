@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, symlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { test, describe } from "node:test";
-import { FAKE_AWS_KEY, collect, fakeBin, fakeLocalBin, gitCommitAll, gitInit, project } from "./helpers.mjs";
+import { FAKE_AWS_KEY, collect, fakeBin, fakeLocalBin, gitCommitAll, gitInit, project, write } from "./helpers.mjs";
 
 const repo = (files) => {
   const root = gitInit(project(files));
@@ -600,6 +601,63 @@ describe("collect: review findings", () => {
     assert.match(r.output, /git did not finish: fatal: detected dubious ownership/);
   });
 
+  describe("git failing partway", () => {
+    test("a failed commit count fails the gate, and isn't 'no commits'", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      const binDir = `${root}/fake-path`;
+      const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      fakeBin(binDir, "git", `[ "$1" = "rev-list" ] && { echo "fatal: bad object HEAD" >&2; exit 128; }; exec "${real}" "$@"`);
+      fakeBin(binDir, "gitleaks", "exit 0");
+      const r = collect(root, GATE, { binDir });
+      assert.equal(r.summary.tools.gitleaks.status, "failed");
+      assert.ok(!r.summary.tools.gitleaks.notApplicable);
+      assert.equal(r.code, 1);
+      assert.match(r.output, /gitleaks did not finish/);
+    });
+
+    test("a HEAD that can't be read fails git and gitleaks, and isn't 'no commits'", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      const binDir = `${root}/fake-path`;
+      // scanProject needs rev-parse too, so only --verify fails here.
+      const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      fakeBin(binDir, "git", `[ "$2" = "--verify" ] && exit 128; exec "${real}" "$@"`);
+      fakeBin(binDir, "gitleaks", "exit 0");
+      const r = collect(root, GATE, { binDir });
+      assert.equal(r.summary.tools.git.status, "failed");
+      assert.equal(r.summary.tools.gitleaks.status, "failed");
+      assert.equal(r.code, 1);
+    });
+
+    test("a repo with no commits has nothing to scan, and doesn't fail the gate", () => {
+      const root = gitInit(project({ "src/a.ts": "export {};\n" }));
+      const binDir = `${root}/fake-path`;
+      fakeBin(binDir, "gitleaks", "exit 0");
+      const r = collect(root, GATE, { binDir });
+      assert.equal(r.summary.tools.git.status, "ok");
+      assert.equal(r.summary.tools.gitleaks.status, "skipped");
+      assert.equal(r.summary.tools.gitleaks.notApplicable, true);
+      assert.equal(r.code, 0);
+    });
+  });
+
+  test("with git missing, a subfolder of a real repo isn't called 'not a repo'", () => {
+    const root = repo({ "apps/web/src/a.ts": "export {};\n" });
+    const web = join(root, "apps/web");
+    const binDir = project();
+    fakeBin(binDir, "sh", `exec /bin/sh "$@"`);
+    const r = collect(web, GATE, { env: { PATH: binDir } });
+    assert.equal(r.summary.tools.git.status, "failed");
+    assert.equal(r.code, 1);
+  });
+
+  test("with git missing, a folder in no repo is still 'not a repo'", () => {
+    const binDir = project();
+    fakeBin(binDir, "sh", `exec /bin/sh "$@"`);
+    const r = collect(project({ "src/a.ts": "export {};\n" }), GATE, { env: { PATH: binDir } });
+    assert.equal(r.summary.tools.git.status, "skipped");
+    assert.equal(r.summary.tools.git.notApplicable, true);
+  });
+
   test("a folder that isn't a repo is skipped, and says so", () => {
     const r = collect(project({ "src/a.ts": "export {};\n" }), GATE);
     assert.equal(r.summary.tools.git.status, "skipped");
@@ -758,5 +816,128 @@ describe("collect: review findings", () => {
     const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
     fakeLocalBin(root, "tsc", `echo "src/a.ts(1,1): error TS1: '${key}'"; exit 2`);
     assert.doesNotMatch(collect(root).raw("typecheck.txt"), new RegExp(body));
+  });
+});
+
+describe("collect: evidence for scoring", () => {
+  test("records the collector version and commit", () => {
+    const root = repo({ "src/a.ts": "export {};\n" });
+    const { summary } = collect(root);
+    assert.match(summary.collectorVersion, /^\d+\.\d+\.\d+$/);
+    assert.match(summary.commit, /^[0-9a-f]{40}$/);
+  });
+
+  test("outside git, the commit is null", () => {
+    assert.equal(collect(project({ "src/a.ts": "export {};\n" })).summary.commit, null);
+  });
+
+  test("captures the history the auditors can no longer ask git for", () => {
+    const r = collect(repo({ "src/a.ts": "export {};\n" }));
+    assert.match(r.raw("git-log.txt"), /fixture/);
+    assert.match(r.raw("git-log.txt"), /1 file changed/);
+  });
+
+  test("redacts secrets in commit messages", () => {
+    const root = repo({ "src/a.ts": "export {};\n" });
+    write(root, "src/b.ts", "export {};\n");
+    spawnSync("git", ["add", "-A"], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", `oops ${FAKE_AWS_KEY}`], { cwd: root });
+    assert.doesNotMatch(collect(root).raw("git-log.txt"), new RegExp(FAKE_AWS_KEY));
+  });
+
+  test("counts open and accepted secrets", () => {
+    const root = repo({ "src/a.ts": `export const k = "${FAKE_AWS_KEY}";\n`, "src/b.ts": `export const k = "${FAKE_AWS_KEY}";\n`,
+      ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "src/b.ts", reason: "docs key", expires: "2999-01-01" }] }) });
+    assert.deepEqual(collect(root).summary.metrics.secrets, { open: 1, accepted: 1 });
+  });
+
+  test("a risks-only exceptions file doesn't fail the gate", () => {
+    const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ risks: [] }) });
+    assert.equal(collect(root, GATE).code, 0);
+  });
+
+  test("an exceptions file with neither list still fails the gate", () => {
+    const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": "{}" });
+    assert.equal(collect(root, GATE).code, 1);
+  });
+
+  test("names the lockfile, from any ecosystem", () => {
+    assert.equal(collect(repo({ "package.json": "{}", "package-lock.json": "{}" })).summary.metrics.lockfile.name, "package-lock.json");
+    assert.equal(collect(repo({ "go.sum": "" })).summary.metrics.lockfile.name, "go.sum");
+    assert.deepEqual(collect(repo({ "package.json": `{"devDependencies":{"x":"1"}}` })).summary.metrics.lockfile, { hasDependencies: true, name: null });
+    assert.deepEqual(collect(repo({ "package.json": `{"name":"x"}` })).summary.metrics.lockfile, { hasDependencies: false, name: null });
+  });
+
+  describe("strict", () => {
+    const tsc = (config) => {
+      const root = repo({ "tsconfig.json": config, "src/a.ts": "export {};\n" });
+      fakeLocalBin(root, "tsc", "exit 0");
+      return collect(root).summary.metrics.tsStrict;
+    };
+    test("on", () => assert.equal(tsc(`{"compilerOptions":{"strict":true}}`), true));
+    test("off", () => assert.equal(tsc(`{"compilerOptions":{"strict":false}}`), false));
+    test("not set and nothing inherited", () => assert.equal(tsc(`{}`), false));
+    test("not set here but inherited is unknown", () => assert.equal(tsc(`{"extends":"./base.json"}`), null));
+    test("set here wins over inherited", () => assert.equal(tsc(`{"extends":"./base.json","compilerOptions":{"strict":true}}`), true));
+  });
+
+  describe("changes since the last audit (item 14)", () => {
+    const head = (root) => spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const withBaseline = (commit) => {
+      const root = repo({ "src/a.ts": "export {};\n", "src/gone.ts": "export {};\n" });
+      write(root, "docs/audits/latest.json", JSON.stringify({ commit: commit ?? head(root) }));
+      gitCommitAll(root);
+      return root;
+    };
+
+    test("lists committed, uncommitted and new files, each once", () => {
+      const root = withBaseline();
+      write(root, "src/committed.ts", "export {};\n");
+      gitCommitAll(root);
+      write(root, "src/a.ts", "export const a = 1;\n");
+      write(root, "src/new file.ts", "export {};\n");
+      const r = collect(root);
+      assert.equal(r.summary.tools.sinceLast.status, "ok");
+      const changed = r.raw("changed-since-last.txt").split("\n");
+      for (const f of ["src/committed.ts", "src/a.ts", "src/new file.ts"]) assert.ok(changed.includes(f), f);
+      assert.equal(changed.length, new Set(changed).size);
+    });
+
+    test("no baseline is skipped", () => {
+      assert.equal(collect(repo({ "src/a.ts": "" })).summary.tools.sinceLast.status, "skipped");
+    });
+
+    test("an old baseline with no commit is skipped and says so", () => {
+      const root = repo({ "docs/audits/latest.json": "{}" });
+      assert.match(collect(root).summary.tools.sinceLast.skipped, /no commit/);
+    });
+
+    test("a commit missing from history has failed, not found nothing", () => {
+      const t = collect(withBaseline("a".repeat(40))).summary.tools.sinceLast;
+      assert.equal(t.status, "failed");
+      assert.match(t.reason, /history/);
+    });
+
+    test("a commit that isn't a SHA never reaches git", () => {
+      const root = withBaseline("--output=pwned");
+      const t = collect(root).summary.tools.sinceLast;
+      assert.equal(t.status, "failed");
+      assert.ok(!existsSync(`${root}/pwned`));
+    });
+
+    test("unreadable JSON has failed", () => {
+      assert.equal(collect(repo({ "docs/audits/latest.json": "{nope" })).summary.tools.sinceLast.status, "failed");
+    });
+
+    test("--baseline points at another app's audit", () => {
+      const root = repo({ "src/a.ts": "" });
+      write(root, "docs/audits/web/latest.json", JSON.stringify({ commit: head(root) }));
+      const r = collect(root, ["--offline", "--no-tests", "--baseline", "docs/audits/web/latest.json"]);
+      assert.equal(r.summary.tools.sinceLast.status, "ok");
+    });
+
+    test("doesn't affect the gate", () => {
+      assert.equal(collect(withBaseline("a".repeat(40)), GATE).code, 0);
+    });
   });
 });
