@@ -13,15 +13,33 @@ const globToRegex = (glob) => new RegExp(`^${glob
   .replace(/[.+^${}()|[\]\\?]/g, "\\$&")
   .replace(/\*\*\/|\*\*|\*/g, (m) => (m === "**/" ? "(?:.*/)?" : m === "**" ? ".*" : "[^/]*"))}$`);
 
-const validDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
+// `2999-13-01` is an Invalid Date, whose toISOString() throws.
+const validDate = (s) => {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
+// An acceptance has to be looked at again, so 9999-12-31 isn't an expiry.
+const MAX_DAYS = 366;
+const daysFrom = (today, date) => (new Date(`${date}T00:00:00Z`) - new Date(`${today}T00:00:00Z`)) / 864e5;
 
-function problemWith(e, rules = RULES) {
+// Folder and file names no project uses, with the extensions projects do use. A glob that matches
+// one of these matches every such file wherever it is, so it names nothing in particular.
+const EXTENSIONS = ["ts", "tsx", "js", "jsx", "mjs", "py", "go", "rs", "java", "json", "yml", "md", "env", "txt"];
+const ANYWHERE = EXTENSIONS.flatMap((ext) => [`zq7x.${ext}`, `zq7x/kv3w.${ext}`, `zq7x/kv3w/pj9m.${ext}`]);
+const normalize = (path) => path.replace(/^(?:\.\/)+/, "");
+
+function problemWith(e, rules = RULES, today) {
   if (!e || typeof e !== "object") return "not an object";
   if (!rules.includes(e.rule)) return rules === RULES ? `rule must be one of ${RULES.join(", ")}` : `unknown rule "${e.rule}"`;
-  if (typeof e.path !== "string" || !e.path) return "path is required";
-  if (globToRegex(e.path).test("any/folder/file.ts")) return "path matches everything";
+  if (typeof e.path !== "string" || !normalize(e.path)) return "path is required";
+  if (/^\/|^[A-Za-z]:[\\/]|(^|\/)\.\.(\/|$)/.test(e.path)) return "path must be relative to the project, without ..";
+  const glob = globToRegex(normalize(e.path));
+  const sample = ANYWHERE.find((p) => glob.test(p));
+  if (sample) return `path matches files anywhere (such as ${sample}): name the folder or file`;
   if (typeof e.reason !== "string" || !e.reason.trim()) return "reason is required";
   if (!validDate(e.expires)) return "expires must be a date like 2027-01-31";
+  if (daysFrom(today, e.expires) > MAX_DAYS) return `expires is more than a year ahead (${e.expires}): pick a date within a year, and look at it again then`;
   return null;
 }
 
@@ -43,10 +61,10 @@ export function loadExceptions(root, today = new Date().toISOString().slice(0, 1
 function sortEntries(entries, today, rules) {
   const result = { problems: [], active: [], expired: [] };
   entries.forEach((e, i) => {
-    const problem = problemWith(e, rules);
+    const problem = problemWith(e, rules, today);
     if (problem) result.problems.push(`entry ${i + 1}: ${problem}`);
     else if (e.expires < today) result.expired.push(e);
-    else result.active.push({ ...e, matches: globToRegex(e.path) });
+    else result.active.push({ ...e, matches: globToRegex(normalize(e.path)) });
   });
   return result;
 }

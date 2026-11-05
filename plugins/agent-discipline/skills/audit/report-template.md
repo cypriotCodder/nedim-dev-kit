@@ -69,4 +69,4 @@ Impact: <scenario>
 <Each category's `gaps` from `score.json`, plus areas not reviewed (e.g. "mobile app not audited"). Name any cap applied as `not-ruled-out`: the tool broke, so the score is limited until it runs.>
 
 ## Appendix: unconfirmed leads
-<'possible' findings, for a human to look at.>
+<'possible' findings, for a human to look at. Mark the ones in `comparison.downgraded`: they counted last time, and aren't fixed.>

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test, describe } from "node:test";
-import { FAKE_AWS_KEY, collect, fakeBin, fakeLocalBin, gitCommitAll, gitInit, project, write } from "./helpers.mjs";
+import { FAKE_AWS_KEY, PLUGIN as PLUGIN_DIR, collect, fakeBin, fakeLocalBin, gitCommitAll, gitInit, project, write } from "./helpers.mjs";
 
 const repo = (files) => {
   const root = gitInit(project(files));
@@ -11,6 +11,8 @@ const repo = (files) => {
   return root;
 };
 const GATE = ["--offline", "--no-tests", "--gate"];
+const today = () => new Date().toISOString().slice(0, 10);
+const daysAhead = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
 
 describe("collect: current behaviour to keep", () => {
   test("gate passes on a clean project", () => {
@@ -394,7 +396,7 @@ describe("collect: tracked env files", () => {
 
 describe("collect: exceptions file", () => {
   const SECRET = `export const k = "${FAKE_AWS_KEY}";\n`;
-  const FUTURE = "2999-01-01", PAST = "2000-01-01";
+  const FUTURE = daysAhead(100), PAST = "2000-01-01";
   const list = (...exceptions) => JSON.stringify({ exceptions });
   const entry = (over = {}) => ({ rule: "provider-key", path: "fixtures/*.ts", reason: "Fake key from the AWS docs", expires: FUTURE, ...over });
   const gateOn = (exceptionsFile, file = "fixtures/a.ts") => collect(repo({ [file]: SECRET, ".audit-exceptions.json": exceptionsFile }), GATE);
@@ -804,7 +806,7 @@ describe("collect: review findings", () => {
 
   test("a private key marker doesn't take the rest of the summary with it", () => {
     const reason = `Sample starting ${PEM}`;
-    const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "src/*.ts", reason, expires: "2999-01-01" }] }) });
+    const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "src/*.ts", reason, expires: daysAhead(100) }] }) });
     const r = collect(root);
     assert.ok(r.summary.tools.patterns);
     assert.doesNotMatch(r.raw("summary.json"), /PRIVATE KEY/);
@@ -847,7 +849,7 @@ describe("collect: evidence for scoring", () => {
 
   test("counts open and accepted secrets", () => {
     const root = repo({ "src/a.ts": `export const k = "${FAKE_AWS_KEY}";\n`, "src/b.ts": `export const k = "${FAKE_AWS_KEY}";\n`,
-      ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "src/b.ts", reason: "docs key", expires: "2999-01-01" }] }) });
+      ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "src/b.ts", reason: "docs key", expires: daysAhead(100) }] }) });
     assert.deepEqual(collect(root).summary.metrics.secrets, { open: 1, accepted: 1 });
   });
 
@@ -938,6 +940,323 @@ describe("collect: evidence for scoring", () => {
 
     test("doesn't affect the gate", () => {
       assert.equal(collect(withBaseline("a".repeat(40)), GATE).code, 0);
+    });
+  });
+});
+
+// ---------- PR 6: wrong scores, and the leftovers from PR 4 ----------
+// Built at runtime so secret scanners don't flag this repo's own tests.
+const LONG_SECRET = ["wJalrXUtnFEMI", "K7MDENGbPxRfiCY"].join("");
+// A PATH with only the commands collect.mjs needs, so a gitleaks installed on this machine can't leak in.
+function isolatedPath(root) {
+  const dir = join(root, "isolated-bin");
+  for (const cmd of ["sh", "git"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${cmd}`], { encoding: "utf8" }).stdout.trim();
+    fakeBin(dir, cmd, `exec ${found} "$@"`);
+  }
+  return dir;
+}
+const eslintReport = (root, files) => {
+  const path = write(root, "eslint-report.json", JSON.stringify(files));
+  fakeLocalBin(root, "eslint", `cat "${path}"; exit 0`);
+};
+
+describe("collect: PR 6", () => {
+  const pr6 = {};
+
+  describe("CI that isn't on GitHub or GitLab", () => {
+    for (const file of [".circleci/config.yml", "Jenkinsfile", "azure-pipelines.yml", "bitbucket-pipelines.yml"]) {
+      test(`${file} counts as CI`, pr6, () => {
+        const { inventory } = collect(repo({ [file]: "x: 1\n", "src/a.js": "export {};\n" })).summary.metrics;
+        assert.equal(inventory.hasCI, true);
+      });
+    }
+    test("no CI file is still no CI", () => {
+      assert.equal(collect(repo({ "src/a.js": "export {};\n" })).summary.metrics.inventory.hasCI, false);
+    });
+  });
+
+  describe("strict, through extends", () => {
+    const strictOf = (files) => collect(repo({ "src/a.ts": "export {};\n", ...files })).summary;
+    test("off in the config it extends", pr6, () => {
+      assert.equal(strictOf({ "tsconfig.json": `{"extends":"./tsconfig.base.json"}`, "tsconfig.base.json": `{"compilerOptions":{"strict":false}}` }).metrics.tsStrict, false);
+    });
+    test("on in the config it extends", pr6, () => {
+      assert.equal(strictOf({ "tsconfig.json": `{"extends":"./tsconfig.base.json"}`, "tsconfig.base.json": `{"compilerOptions":{"strict":true}}` }).metrics.tsStrict, true);
+    });
+    test("not set anywhere in the chain is off", pr6, () => {
+      assert.equal(strictOf({ "tsconfig.json": `{"extends":"./a.json"}`, "a.json": `{"extends":"./b"}`, "b.json": `{}` }).metrics.tsStrict, false);
+    });
+    test("from an installed package", pr6, () => {
+      const files = { "tsconfig.json": `{"extends":"@tsconfig/strictest/tsconfig.json"}`, "node_modules/@tsconfig/strictest/tsconfig.json": `{"compilerOptions":{"strict":true}}` };
+      assert.equal(strictOf(files).metrics.tsStrict, true);
+    });
+    test("from an installed package named by its folder", pr6, () => {
+      const files = { "tsconfig.json": `{"extends":"@tsconfig/node22"}`, "node_modules/@tsconfig/node22/tsconfig.json": `{"compilerOptions":{"strict":true}}` };
+      assert.equal(strictOf(files).metrics.tsStrict, true);
+    });
+    test("the last of several extends wins", pr6, () => {
+      const files = { "tsconfig.json": `{"extends":["./on.json","./off.json"]}`, "on.json": `{"compilerOptions":{"strict":true}}`, "off.json": `{"compilerOptions":{"strict":false}}` };
+      assert.equal(strictOf(files).metrics.tsStrict, false);
+    });
+    test("a referenced project with strict off is off", pr6, () => {
+      const files = { "tsconfig.json": `{"files":[],"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}]}`, "tsconfig.app.json": `{"compilerOptions":{"strict":true}}`, "tsconfig.node.json": `{"compilerOptions":{"strict":false}}` };
+      assert.equal(strictOf(files).metrics.tsStrict, false);
+    });
+    test("is read without TypeScript installed", pr6, () => {
+      assert.equal(strictOf({ "tsconfig.json": `{"compilerOptions":{"strict":false}}` }).metrics.tsStrict, false);
+    });
+    test("a package that isn't installed is unknown, and says why", pr6, () => {
+      const s = strictOf({ "tsconfig.json": `{"extends":"@tsconfig/strictest/tsconfig.json"}` });
+      assert.equal(s.metrics.tsStrict, null);
+      assert.equal(s.tools.strict.status, "skipped");
+      assert.match(s.tools.strict.skipped, /@tsconfig\/strictest/);
+    });
+    test("a tsconfig that can't be parsed has failed", pr6, () => {
+      assert.equal(strictOf({ "tsconfig.json": `{ nope` }).tools.strict.status, "failed");
+    });
+  });
+
+  test("a broken package.json doesn't read as having no dependencies", pr6, () => {
+    assert.equal(collect(repo({ "package.json": "{ nope" })).summary.metrics.lockfile.hasDependencies, null);
+  });
+
+  describe("secrets the scan missed", () => {
+    for (const [what, line] of [
+      ["a name with more after the secret word", `AWS_SECRET_ACCESS_KEY="${LONG_SECRET}"`],
+      ["a camelCase name", `const secretKey = "${LONG_SECRET}";`],
+      ["a value with symbols", `password: "p@ss!w0rd#Zx9$Qm2&Lk7"`],
+      ["a GitHub fine-grained token", `const t = "${["github", "pat", "11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789"].join("_")}";`],
+      ["an OpenAI project key", `const t = "${["sk", "proj", "abcdefghijklmnopqrstuvwxyz012345"].join("-")}";`],
+    ]) {
+      test(`${what} blocks the gate`, pr6, () => {
+        assert.equal(collect(repo({ "src/config.ts": `${line}\n` }), GATE).code, 1);
+      });
+    }
+    for (const [what, encode] of [["with a BOM", (s) => Buffer.from(`﻿${s}`, "utf16le")], ["without a BOM", (s) => Buffer.from(s, "utf16le")]]) {
+      test(`a key in a UTF-16 file ${what} is found`, pr6, () => {
+        assert.equal(collect(repo({ "config/app.ps1": encode(`$k = "${FAKE_AWS_KEY}"\r\n`) }), GATE).code, 1);
+      });
+    }
+    test("a binary file is still skipped", () => {
+      assert.equal(collect(repo({ "logo.png": Buffer.from([0x89, 0x50, 0, 0, 0, 1, 2, 3]) }), GATE).code, 0);
+    });
+  });
+
+  describe("redaction of more secret formats", () => {
+    for (const [what, text, secret] of [
+      ["a password in a URL", "postgres://admin:Xk9mQ2pLw7@db.internal/app", "Xk9mQ2pLw7"],
+      ["a Bearer token", "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9abcdef", "eyJhbGciOiJIUzI1NiJ9abcdef"],
+      ["a GitHub fine-grained token", ["github", "pat", "11ABCDEFG0abcdefghijklmnop"].join("_"), "11ABCDEFG0abcdefghijklmnop"],
+      ["an OpenAI project key", ["sk", "proj", "abcdefghijklmnopqrstuvwxyz"].join("-"), "abcdefghijklmnopqrstuvwxyz"],
+      ["an unquoted PASSWORD=", "DB_PASSWORD=Xk9mQ2pLw7", "Xk9mQ2pLw7"],
+    ]) {
+      test(`removes ${what} from tool output`, pr6, () => {
+        const root = repo({ "src/a.js": "export {};\n" });
+        eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: text }] }]);
+        assert.doesNotMatch(collect(root).raw("eslint.json"), new RegExp(secret));
+      });
+    }
+    test("redacts a secret that arrives JSON-escaped", () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: `apiKey: "${LONG_SECRET}"` }] }]);
+      assert.doesNotMatch(collect(root).raw("eslint.json"), new RegExp(LONG_SECRET));
+    });
+    test("console output is redacted too", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      const binDir = join(root, "fake-path");
+      const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      fakeBin(binDir, "git", `case "$1" in rev-parse) echo "fatal: ${FAKE_AWS_KEY}" >&2; exit 2;; esac; exec ${realGit} "$@"`);
+      assert.doesNotMatch(collect(root, ["--offline", "--no-tests"], { binDir }).output, new RegExp(FAKE_AWS_KEY));
+    });
+  });
+
+  describe("false gate failures", () => {
+    test(".env.development holding settings named like secrets passes", pr6, () => {
+      const r = collect(repo({ "src/a.ts": "export {};\n", ".env.development": "ACCESS_TOKEN_EXPIRES_IN=15m\nPASSWORD_MIN_LENGTH=8\nREFRESH_TOKEN_TTL=604800\nAUTH_TOKEN_ENABLED=true\n" }), GATE);
+      assert.equal(r.code, 0, r.output);
+    });
+    test(".env.development holding a real password still blocks", () => {
+      assert.equal(collect(repo({ "src/a.ts": "export {};\n", ".env.development": "DB_PASSWORD=Xk9mQ2pLw7\n" }), GATE).code, 1);
+    });
+    for (const [what, line] of [
+      ["a dotted message key", `{"token": "errors.token_invalid_message"}`],
+      ["an environment variable reference", `password: "process.env.DB_PASSWORD"`],
+      ["a file path", `privateKey: "./certs/server-private-key.pem"`],
+      ["a snake_case identifier", `const tokenName = "refresh_token_cookie_name";`],
+    ]) {
+      test(`${what} isn't a secret`, pr6, () => {
+        const r = collect(repo({ "src/a.ts": `${line}\n` }), GATE);
+        assert.equal(r.code, 0, r.output);
+      });
+    }
+  });
+
+  describe("the gate says what it didn't assess", () => {
+    const binWith = (root, extra = {}) => {
+      const binDir = join(root, "fake-path");
+      fakeBin(binDir, "npx", "exit 1");
+      for (const [name, body] of Object.entries(extra)) fakeBin(binDir, name, body);
+      return binDir;
+    };
+    const ONLINE_GATE = ["--no-tests", "--gate"];
+    for (const [what, files] of [
+      ["dependencies with no lockfile", { "package.json": `{"dependencies":{"x":"1"}}` }],
+      ["a bun lockfile", { "package.json": `{"dependencies":{"x":"1"}}`, "bun.lock": "{}" }],
+      ["a Cargo.lock", { "Cargo.toml": "[package]\n", "Cargo.lock": "" }],
+    ]) {
+      test(`${what}, with no dependency audit, fails the gate`, pr6, () => {
+        const root = repo({ "src/a.js": "export {};\n", ...files });
+        const r = collect(root, ONLINE_GATE, { binDir: binWith(root) });
+        assert.equal(r.code, 1, r.output);
+        assert.match(r.output, /vulnerabilities/);
+      });
+    }
+    test("osv-scanner's high findings fail the gate", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n", "Cargo.toml": "[package]\n", "Cargo.lock": "" });
+      const osv = JSON.stringify({ results: [{ packages: [{ package: { name: "x" }, groups: [{ ids: ["GHSA-1"], max_severity: "8.1" }] }] }] });
+      const r = collect(root, ONLINE_GATE, { binDir: binWith(root, { "osv-scanner": `echo '${osv}'; exit 1` }) });
+      assert.equal(r.code, 1, r.output);
+      assert.equal(r.summary.metrics.vulnerableDeps.high, 1);
+    });
+    test("a clean osv-scanner passes a Cargo project", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n", "Cargo.toml": "[package]\n", "Cargo.lock": "" });
+      const r = collect(root, ONLINE_GATE, { binDir: binWith(root, { "osv-scanner": `echo '{"results":[]}'; exit 0` }) });
+      assert.equal(r.code, 0, r.output);
+    });
+    test("no dependencies at all doesn't need an audit", () => {
+      const root = repo({ "src/a.js": "export {};\n", "package.json": `{"name":"x"}` });
+      assert.equal(collect(root, ONLINE_GATE, { binDir: binWith(root) }).code, 0);
+    });
+    test("gitleaks missing in CI fails the gate", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      const r = collect(root, GATE, { env: { CI: "1", PATH: isolatedPath(root) } });
+      assert.equal(r.code, 1, r.output);
+      assert.match(r.output, /gitleaks/);
+    });
+    test("a gate that passes lists what it didn't assess", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      const r = collect(root, GATE, { env: { PATH: isolatedPath(root) } });
+      assert.equal(r.code, 0, r.output);
+      assert.match(r.output, /GATE PASSED[^\n]*\n[^\n]*not assessed[^\n]*gitleaks/i);
+    });
+  });
+
+  describe("results that read as clean when nothing ran", () => {
+    test("--src naming a missing folder stops with an error", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      const r = spawnSync(process.execPath, [join(PLUGIN_DIR, "skills/audit/collect.mjs"), ".", "--offline", "--no-tests", "--src", "scr"], { cwd: root, encoding: "utf8" });
+      assert.equal(r.status, 2, r.stdout + r.stderr);
+      assert.match(r.stderr, /scr/);
+    });
+    test("ESLint linting no files has failed", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      eslintReport(root, []);
+      assert.equal(collect(root).summary.tools.eslint.status, "failed");
+    });
+    test("ESLint's 'File ignored' notices aren't warnings", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n", "vite.config.js": "export default {};\n" });
+      eslintReport(root, [
+        { filePath: "vite.config.js", errorCount: 0, warningCount: 1, messages: [{ ruleId: null, severity: 1, message: 'File ignored because of a matching ignore pattern. Use "--no-ignore" to override.' }] },
+        { filePath: "src/a.js", errorCount: 0, warningCount: 1, messages: [{ ruleId: "no-unused-vars", severity: 1, message: "x" }] },
+      ]);
+      assert.equal(collect(root).summary.metrics.lint.warnings, 1);
+    });
+    const npmProject = (outdated) => {
+      const root = repo({ "src/a.js": "export {};\n", "package.json": `{"dependencies":{"x":"1"}}`, "package-lock.json": "{}" });
+      const binDir = join(root, "fake-path");
+      fakeBin(binDir, "npx", "exit 1");
+      fakeBin(binDir, "npm", `case "$1" in audit) echo '{"metadata":{"vulnerabilities":{"high":0}}}'; exit 0;; outdated) ${outdated};; esac`);
+      return collect(root, ["--no-tests"], { binDir }).summary;
+    };
+    for (const [what, body] of [["with no output", `echo "npm ERR! crash" >&2; exit 1`], ["with an error report", `echo '{"error":{"code":"E404"}}'; exit 1`]]) {
+      test(`a crashed npm outdated ${what} records no counts`, pr6, () => {
+        const s = npmProject(body);
+        assert.equal(s.metrics.outdated, undefined);
+        assert.equal(s.tools.vulnerabilities.outdated, "failed");
+      });
+    }
+    test("npm outdated with nothing outdated counts zero", () => {
+      assert.deepEqual(npmProject("exit 0").metrics.outdated, { total: 0, majorBehind: 0 });
+    });
+    test("evidence from an earlier run is removed", pr6, () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      write(root, ".audit/raw/outdated.json", `{"stale":{}}`);
+      write(root, ".audit/raw/notes.md", "mine");
+      collect(root);
+      assert.ok(!existsSync(join(root, ".audit/raw/outdated.json")));
+      assert.ok(existsSync(join(root, ".audit/raw/notes.md")), "removed a file it didn't write");
+    });
+    test("jscpd ignores the same folders as the rest of the audit", pr6, () => {
+      const root = repo({ "package.json": "{}\n", "src/a.ts": "export {};\n" });
+      const binDir = join(root, "fake-path");
+      const args = join(root, "jscpd-args.txt");
+      fakeBin(binDir, "npx", `case "$2" in jscpd*) echo "$@" > "${args}";; esac; exit 1`);
+      collect(root, ["--no-tests"], { binDir });
+      const ignore = readFileSync(args, "utf8");
+      for (const dir of ["target", ".venv", "venv", "bin", "obj", "__pycache__", ".turbo"]) assert.match(ignore, new RegExp(`\\*\\*/${dir.replace(".", "\\.")}/\\*\\*`), dir);
+    });
+  });
+
+  describe("exceptions", () => {
+    const SECRET = `export const k = "${FAKE_AWS_KEY}";\n`;
+    const gateOn = (entry, file = "fixtures/a.ts") => collect(repo({ [file]: SECRET, ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", reason: "Docs key", expires: daysAhead(30), ...entry }] }) }), GATE);
+    test("a folder named any/ can be excepted", pr6, () => assert.equal(gateOn({ path: "any/**" }, "any/a.ts").code, 0));
+    for (const path of ["**/*.ts", "*.ts", "**/*"]) {
+      test(`${path} matches every file of a kind, and is refused`, pr6, () => {
+        const r = gateOn({ path });
+        assert.equal(r.summary.tools.exceptions.status, "failed");
+        assert.match(r.output, /matches/);
+      });
+    }
+    test("a month that doesn't exist is refused, without crashing", pr6, () => {
+      const r = gateOn({ path: "fixtures/*.ts", expires: "2999-13-01" });
+      assert.equal(r.summary.tools.exceptions.status, "failed");
+      assert.doesNotMatch(r.output, /RangeError/);
+    });
+    test("an expiry more than a year ahead is refused", pr6, () => {
+      const r = gateOn({ path: "fixtures/*.ts", expires: "9999-12-31" });
+      assert.equal(r.summary.tools.exceptions.status, "failed");
+      assert.match(r.output, /year/);
+    });
+    test("an expiry today still applies", () => assert.equal(gateOn({ path: "fixtures/*.ts", expires: today() }).code, 0));
+    test("a path starting with ./ matches", pr6, () => assert.equal(gateOn({ path: "./fixtures/a.ts" }).code, 0));
+    test("an entry nothing matches is printed", pr6, () => {
+      const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "old/key.ts", reason: "Docs key", expires: daysAhead(30) }] }) });
+      assert.match(collect(root).output, /old\/key\.ts/);
+    });
+  });
+
+  describe("test gaps from the PR 4 mutation run", () => {
+    test("gitleaks is asked to redact what it reports", () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      const binDir = join(root, "fake-path");
+      fakeBin(binDir, "gitleaks", `case " $* " in *" --redact "*) S=REDACTED;; *) S=plaintextvalue;; esac; while [ "$1" != "--report-path" ]; do shift; done; echo "[{\\"Secret\\":\\"$S\\"}]" > "$2"; exit 1`);
+      const r = collect(root, ["--offline", "--no-tests"], { binDir });
+      assert.equal(r.summary.metrics.secretsInHistory, 1);
+      assert.doesNotMatch(r.raw("gitleaks.json"), /plaintextvalue/);
+    });
+    test("a tracked env file that can't be read isn't clean", { skip: process.getuid?.() === 0 && "root reads anything" }, () => {
+      const root = repo({ "src/a.ts": "export {};\n", ".env.development": "X=1\n" });
+      chmodSync(join(root, ".env.development"), 0o000);
+      try {
+        const r = collect(root, GATE);
+        assert.equal(r.code, 1);
+        assert.match(r.output, /\.env\.development \(couldn't be read\)/);
+      } finally { chmodSync(join(root, ".env.development"), 0o644); }
+    });
+    test("every top-level source folder is passed to the tools", () => {
+      const names = Array.from({ length: 14 }, (_, i) => `pkg${i}`);
+      const r = collect(repo(Object.fromEntries(names.map((n) => [`${n}/a.js`, "export {};\n"]))));
+      assert.deepEqual([...r.summary.metrics.inventory.srcDirs].sort(), [...names].sort());
+    });
+    test("a tool that runs out of time is timed-out, and blocks the gate", pr6, () => {
+      const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
+      fakeLocalBin(root, "tsc", "sleep 5");
+      const r = collect(root, GATE, { env: { AGENT_DISCIPLINE_TOOL_TIMEOUT_MS: "300" } });
+      assert.equal(r.summary.tools.typecheck.status, "timed-out");
+      assert.equal(r.code, 1);
+      assert.match(r.output, /typecheck did not finish/);
     });
   });
 });

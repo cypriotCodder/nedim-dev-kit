@@ -84,7 +84,14 @@ describe("audit CI template", () => {
   });
 
   test("installs a pinned gitleaks, so history gets scanned", () => {
-    assert.match(template, /gitleaks\/releases\/download\/v\d/);
+    assert.match(template, /gitleaks\/releases\/download\/v\$\{GITLEAKS_VERSION\}/);
+    assert.match(template, /GITLEAKS_VERSION: \d+\.\d+\.\d+/);
+  });
+
+  test("checks the gitleaks download against a pinned checksum before running it", () => {
+    assert.match(template, /GITLEAKS_SHA256: [0-9a-f]{64}\n/);
+    const run = template.slice(template.indexOf("Install gitleaks"));
+    assert.ok(run.indexOf("sha256sum --check") < run.indexOf("tar -xzf"), "unpacks before checking");
   });
 
   test("limits the token's permissions", () => {
