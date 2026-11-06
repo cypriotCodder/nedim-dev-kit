@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative, extname, resolve } from "node:path";
 import { EXCEPTIONS_FILE, applyExceptions, loadExceptions } from "./lib/exceptions.mjs";
-import { IGNORED_DIRS, JS_FILE, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, readStrict, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
+import { IGNORED_DIRS, JS_FILE, TIMEOUT_SETTING_PROBLEM, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, inCI, readStrict, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
 import { HARDCODED_SECRET, PROVIDER_KEY, envFileLeak, isEnvTemplate, redact } from "./lib/secrets.mjs";
 import { KIT_VERSION } from "./lib/version.mjs";
 
@@ -37,6 +37,7 @@ const out = resolve(root, outArg || ".audit/raw");
 // Console output can quote tool errors, so it goes through redaction like the files do.
 const log = (text) => console.log(redact(text));
 const logError = (text) => console.error(redact(text));
+if (TIMEOUT_SETTING_PROBLEM) logError(`collect.mjs: ${TIMEOUT_SETTING_PROBLEM}`);
 // A folder that isn't there would be linted as nothing and reported as clean.
 if (srcArg && !statSync(resolve(root, srcArg), { throwIfNoEntry: false })?.isDirectory()) {
   logError(`collect.mjs: --src ${srcArg} isn't a folder in ${root}`);
@@ -193,6 +194,10 @@ if (existsSync(join(root, "tsconfig.json"))) tool("strict", () => {
 // ---------- Lint ----------
 tool("eslint", () => {
   if (!existsSync(bin("eslint"))) return { skipped: "eslint not installed" };
+  // Only the folders ESLint is given count: JS elsewhere isn't something it was asked to lint.
+  const lintDirs = srcDirs.map((d) => relative(root, resolve(root, d)) || ".");
+  const hasJs = srcFiles.some((f) => /\.(c|m)?(j|t)sx?$/.test(f) && lintDirs.some((d) => d === "." || f.startsWith(`${d}/`)));
+  if (!hasJs) return doesntApply(`no JS or TS files in ${srcDirs.join(", ")}`);
   // ESLint exits 1 for lint errors and 2 when it crashed or its config is broken.
   // An extra folder of a type this config doesn't lint shouldn't count as a crash.
   const r = runTool(bin("eslint"), [...srcDirs, "--no-error-on-unmatched-pattern", "-f", "json"], { cwd: root, env: { CI: "1" }, isFindings: ({ code }) => code === 1 });
@@ -200,11 +205,13 @@ tool("eslint", () => {
   if (r.status !== "ok") { save("eslint.txt", r.output); return didNotFinish(r); }
   const report = parseJson(r.stdout);
   if (!Array.isArray(report)) { save("eslint.txt", r.output); return unreadable("ESLint"); }
-  // An empty report linted nothing, which can't be called clean when there's code to lint.
-  if (!report.length && srcFiles.some((f) => /\.(c|m)?(j|t)sx?$/.test(f))) { save("eslint.txt", r.output); return { status: "failed", reason: `ESLint linted no files in ${srcDirs.join(", ")}` }; }
-  let errors = 0, warnings = 0, byRule = {};
   // A file passed by name that its config ignores gets a warning with no rule. It isn't a problem in the code.
   const isIgnoredNotice = (m) => !m.ruleId && m.severity === 1 && /^File ignored\b/.test(m.message || "");
+  // A report that's empty, or holds only "File ignored" notices, linted nothing. With code to lint,
+  // that can't be called clean.
+  const linted = report.filter((f) => !f.messages?.length || !f.messages.every(isIgnoredNotice));
+  if (!linted.length) { save("eslint.txt", r.output); return { status: "failed", reason: `ESLint linted no files in ${srcDirs.join(", ")}` }; }
+  let errors = 0, warnings = 0, byRule = {};
   for (const f of report) {
     errors += f.errorCount;
     warnings += f.warningCount - f.messages.filter(isIgnoredNotice).length;
@@ -304,10 +311,12 @@ function auditCounts({ stdout, code }) {
   return counts;
 }
 // osv-scanner groups each package's advisories, with the highest CVSS score of each group.
-function osvCounts(report) {
+// `leaveOut` names an ecosystem another audit already covered.
+function osvCounts(report, leaveOut) {
   if (!Array.isArray(report?.results)) return undefined;
   const counts = {};
-  for (const { packages = [] } of report.results) for (const { groups = [] } of packages) for (const g of groups) {
+  for (const { packages = [] } of report.results) for (const { package: p, groups = [] } of packages) for (const g of groups) {
+    if (leaveOut && p?.ecosystem === leaveOut) continue;
     const cvss = Number.parseFloat(g.max_severity);
     const level = Number.isNaN(cvss) ? "unknown" : cvss >= 9 ? "critical" : cvss >= 7 ? "high" : cvss >= 4 ? "moderate" : "low";
     counts[level] = (counts[level] || 0) + 1;
@@ -325,12 +334,13 @@ tool("vulnerabilities", () => {
   if (offline) return { skipped: "offline" };
   if (pkgBroken) return BROKEN_PKG;
   const extra = {};
-  let osv;
+  let osv, osvReport;
   if (onPath("osv-scanner")) {
     // Exits 1 when it finds vulnerabilities.
     const r = runTool("osv-scanner", ["scan", "source", "-r", ".", "--format", "json"], { cwd: root, isFindings: ({ code }) => code === 1 });
     save("osv.json", r.stdout);
-    osv = r.status === "ok" ? osvCounts(parseJson(r.stdout)) : undefined;
+    osvReport = r.status === "ok" ? parseJson(r.stdout) : undefined;
+    osv = osvCounts(osvReport);
     extra.osv = osv ? "ok" : "failed";
     if (osv) summary.metrics.vulnerableDeps = osv;
   }
@@ -351,7 +361,9 @@ tool("vulnerabilities", () => {
   if (r.status !== "ok") return { ...didNotFinish(r), lock, ...extra };
   const counts = auditCounts(r);
   if (!counts) { save("dep-audit.txt", r.output); return { ...unreadable(`${pm.name} audit`), lock, ...extra }; }
-  summary.metrics.vulnerableDeps = addCounts(counts, osv);
+  // The package manager's audit leaves dev dependencies out on purpose, and osv-scanner would count
+  // the same npm advisories again. Only its other ecosystems (a Python or Go part) are added.
+  summary.metrics.vulnerableDeps = addCounts(counts, osvReport && osvCounts(osvReport, "npm"));
   if (pm.name === "npm") {
     // Exits 1 when anything is outdated. This is context, so it doesn't decide the tool's status.
     const o = runTool("npm", ["outdated", "--json"], { cwd: root, isFindings: () => true });
@@ -380,7 +392,7 @@ tool("gitleaks", () => {
   if (!isGit) return doesntApply("not a git repo");
   if (!onPath("gitleaks")) {
     // In CI the gate decides on it, and an install step that broke must not pass as "nothing found".
-    if (gate && process.env.CI) return { status: "failed", reason: "gitleaks isn't installed, so git history wasn't scanned" };
+    if (gate && inCI()) return { status: "failed", reason: "gitleaks isn't installed, so git history wasn't scanned" };
     return { skipped: "gitleaks not installed (brew install gitleaks to scan git history)" };
   }
   if (headBroken) return { status: "failed", reason: "git couldn't read HEAD, so the history can't be scanned" };
@@ -608,7 +620,7 @@ tool("tests", () => {
   if (pkgBroken) return BROKEN_PKG;
   if (!pkg.scripts?.test || /no test specified/.test(pkg.scripts.test)) { summary.metrics.tests = { configured: false }; return { skipped: "no test script" }; }
   if (noTests) return { skipped: "--no-tests" };
-  if (!wantTests && !gate && !process.env.CI) { summary.metrics.tests = { configured: true, ran: false }; return { skipped: "not run locally: add --tests if they're safe to run here" }; }
+  if (!wantTests && !gate && !inCI()) { summary.metrics.tests = { configured: true, ran: false }; return { skipped: "not run locally: add --tests if they're safe to run here" }; }
   const r = runTool(...testCommand(pm.name, /vitest/.test(pkg.scripts.test) ? ["--run"] : []), { cwd: root, timeout: 420000, env: { CI: "1" }, isFindings: () => true });
   save("tests.txt", redact(r.output).slice(-20000)); // redact first: a cut key no longer matches
   const passed = r.output.match(/(\d+)\s+(?:passed|passing)/i), failed = r.output.match(/(\d+)\s+(?:failed|failing)/i);
@@ -619,7 +631,7 @@ tool("tests", () => {
 summary.skipped = Object.entries(summary.tools).filter(([, v]) => v.skipped).map(([k, v]) => `${k}: ${v.skipped}`);
 save("summary.json", JSON.stringify(summary, null, 2));
 log(`Audit evidence written to ${relative(root, out) || out}`);
-log(JSON.stringify(summary.metrics, null, 1).slice(0, 6000));
+console.log(redact(JSON.stringify(summary.metrics, null, 1)).slice(0, 6000)); // redact first: a cut key no longer matches
 if (summary.skipped.length) log("\nSkipped:\n  " + summary.skipped.join("\n  "));
 const broken = Object.entries(summary.tools).filter(([, v]) => v.status === "failed" || v.status === "timed-out");
 if (broken.length) log("\nDid not finish (not assessed):\n  " + broken.map(([k, v]) => `${k}: ${v.reason || v.status}`).join("\n  "));

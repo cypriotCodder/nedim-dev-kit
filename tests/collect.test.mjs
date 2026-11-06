@@ -1260,3 +1260,125 @@ describe("collect: PR 6", () => {
     });
   });
 });
+
+describe("collect: PR 8 (bugs the PR 6 review confirmed)", () => {
+  const SECRET = `export const k = "${FAKE_AWS_KEY}";\n`;
+  const gateOn = (entry, file = "fixtures/a.ts") => collect(repo({ [file]: SECRET, ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", reason: "Docs key", expires: daysAhead(30), ...entry }] }) }), GATE);
+
+  describe("an exception for every file of a kind is refused, whatever the kind", () => {
+    for (const path of ["**/*.yaml", "**/*.cjs", "**/*.vue", "**/*.sh", "**/*.pem", "**/*.test.ts", "**/.env*", "*/*.yaml"]) {
+      test(path, () => {
+        const r = gateOn({ path });
+        assert.equal(r.summary.tools.exceptions.status, "failed");
+        assert.match(r.output, /matches/);
+      });
+    }
+    for (const path of ["fixtures/*.ts", "**/fixtures/**", ".env", "**/.env", "fixtures/a.ts"]) {
+      test(`${path} names something, and is still accepted`, () => assert.equal(gateOn({ path }).summary.tools.exceptions.status, "ok"));
+    }
+  });
+
+  describe("a folder path matches the files under it, as the README says", () => {
+    for (const path of ["fixtures", "fixtures/", "./fixtures"]) {
+      test(path, () => assert.equal(gateOn({ path }, "fixtures/deep/a.ts").code, 0));
+    }
+    test("but not a folder whose name only starts the same", () => assert.equal(gateOn({ path: "fixtures" }, "fixtures2/a.ts").code, 1));
+  });
+
+  test("two extends of the same base aren't a loop", () => {
+    const s = collect(repo({ "src/a.ts": "export {};\n", "tsconfig.json": `{"extends":["./a.json","./b.json"]}`,
+      "a.json": `{"extends":"./base.json"}`, "b.json": `{"extends":"./base.json"}`, "base.json": `{}` })).summary;
+    assert.equal(s.tools.strict.status, "ok");
+    assert.equal(s.metrics.tsStrict, false);
+  });
+
+  test("a real loop is still one", () => {
+    const s = collect(repo({ "src/a.ts": "export {};\n", "tsconfig.json": `{"extends":"./a.json"}`, "a.json": `{"extends":"./tsconfig.json"}` })).summary;
+    assert.equal(s.tools.strict.status, "failed");
+    assert.match(s.tools.strict.reason, /extends itself/);
+  });
+
+  test("the printed metrics are redacted before they're cut, so no half key survives", () => {
+    const withReason = (reason) => collect(repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "old/key.ts", reason, expires: daysAhead(30) }] }) }));
+    const padded = (n) => `${"x".repeat(n)} ${FAKE_AWS_KEY}`;
+    // Where the reason lands in the printed metrics, so the key can be put across the 6000-character cut.
+    // Measured with a key in it, since the scan finding that key adds to the metrics before it.
+    const startOf = (r) => JSON.stringify(r.summary.metrics, null, 1).indexOf("xxx");
+    const at = startOf(withReason(padded(100)));
+    assert.ok(at > 0 && at < 5980, `reason printed at ${at}`);
+    const r = withReason(padded(5990 - at - 1));
+    assert.equal(startOf(r), at, "the key starts 10 characters before the cut");
+    assert.doesNotMatch(r.output, /AKIA/);
+  });
+});
+
+describe("collect: PR 8 (risks the PR 6 review found)", () => {
+
+  describe("osv-scanner beside the package manager's audit", () => {
+    const osvReport = (ecosystem) => JSON.stringify({ results: [{ packages: [{ package: { name: "x", ecosystem }, groups: [{ ids: ["GHSA-1"], max_severity: "8.1" }] }] }] });
+    const audited = (ecosystem, files = {}) => {
+      const root = repo({ "src/a.js": "export {};\n", "package.json": `{"dependencies":{"x":"1"}}`, "package-lock.json": "{}", ...files });
+      const binDir = join(root, "fake-path");
+      fakeBin(binDir, "npx", "exit 1");
+      fakeBin(binDir, "npm", `case "$1" in audit) echo '{"metadata":{"vulnerabilities":{"high":0}}}'; exit 0;; *) echo '{}';; esac`);
+      fakeBin(binDir, "osv-scanner", `echo '${osvReport(ecosystem)}'; exit 1`);
+      return collect(root, ["--no-tests", "--gate"], { binDir });
+    };
+    test("an npm advisory npm audit left out isn't counted again", () => {
+      const r = audited("npm");
+      assert.equal(r.summary.metrics.vulnerableDeps.high ?? 0, 0);
+      assert.equal(r.code, 0, r.output);
+    });
+    test("an advisory in another ecosystem still counts", () => {
+      const r = audited("PyPI", { "requirements.txt": "x==1\n" });
+      assert.equal(r.summary.metrics.vulnerableDeps.high, 1);
+      assert.equal(r.code, 1);
+    });
+  });
+
+  describe("ESLint linting nothing", () => {
+    test("isn't a failure when the folders it was given hold no JS", () => {
+      const root = repo({ "server/app.py": "x = 1\n", "web/a.js": "export {};\n" });
+      eslintReport(root, []);
+      const r = spawnSync(process.execPath, [join(PLUGIN_DIR, "skills/audit/collect.mjs"), ".", "--offline", "--no-tests", "--src", "server"], { cwd: root, encoding: "utf8" });
+      const eslint = JSON.parse(readFileSync(join(root, ".audit/raw/summary.json"), "utf8")).tools.eslint;
+      assert.notEqual(eslint.status, "failed", r.stdout + r.stderr);
+    });
+    test("a report of only 'File ignored' notices has failed", () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      eslintReport(root, [{ filePath: "src/a.js", errorCount: 0, warningCount: 1, messages: [{ ruleId: null, severity: 1, message: 'File ignored because of a matching ignore pattern. Use "--no-ignore" to override.' }] }]);
+      assert.equal(collect(root).summary.tools.eslint.status, "failed");
+    });
+  });
+
+  describe("AGENT_DISCIPLINE_TOOL_TIMEOUT_MS", () => {
+    for (const value of ["-5", "0", "abc", "0.5"]) {
+      test(`${value} is ignored with a warning, not passed on`, () => {
+        const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
+        fakeLocalBin(root, "tsc", "exit 0");
+        const r = collect(root, GATE, { env: { AGENT_DISCIPLINE_TOOL_TIMEOUT_MS: value } });
+        assert.equal(r.summary.tools.typecheck.status, "ok", r.output);
+        assert.match(r.output, /AGENT_DISCIPLINE_TOOL_TIMEOUT_MS/);
+      });
+    }
+    test("a fraction is rounded down, and still lowers the limit", () => {
+      const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
+      fakeLocalBin(root, "tsc", "sleep 5");
+      assert.equal(collect(root, GATE, { env: { AGENT_DISCIPLINE_TOOL_TIMEOUT_MS: "300.5" } }).summary.tools.typecheck.status, "timed-out");
+    });
+  });
+
+  describe("CI set to a false value isn't CI", () => {
+    for (const value of ["false", "0", "FALSE"]) {
+      test(`CI=${value} doesn't require gitleaks`, () => {
+        const root = repo({ "src/a.js": "export {};\n" });
+        const r = collect(root, GATE, { env: { CI: value, PATH: isolatedPath(root) } });
+        assert.equal(r.code, 0, r.output);
+      });
+    }
+    test("CI=true still does", () => {
+      const root = repo({ "src/a.js": "export {};\n" });
+      assert.equal(collect(root, GATE, { env: { CI: "true", PATH: isolatedPath(root) } }).code, 1);
+    });
+  });
+});
