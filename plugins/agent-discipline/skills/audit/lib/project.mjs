@@ -18,7 +18,18 @@ export const readPackageJson = (dir) => {
 // `isFindings(result)` tells a non-zero exit that means "found problems" from one that means "broke".
 // `baseEnv` replaces the inherited environment, for tools that shouldn't see all of it.
 // AGENT_DISCIPLINE_TOOL_TIMEOUT_MS lowers every limit, for a CI job with less time than the defaults.
-const TIMEOUT_CAP = Number(process.env.AGENT_DISCIPLINE_TOOL_TIMEOUT_MS) || Infinity;
+// It's whole milliseconds, at least 1: spawnSync throws on a negative or fractional limit, which would
+// fail every tool, and 0 would mean no limit. Any other value is ignored, and TIMEOUT_SETTING_PROBLEM
+// says so, for collect.mjs to print.
+const TIMEOUT_SETTING = process.env.AGENT_DISCIPLINE_TOOL_TIMEOUT_MS?.trim() || null;
+const TIMEOUT_WANTED = Math.floor(Number(TIMEOUT_SETTING));
+export const TIMEOUT_SETTING_PROBLEM = TIMEOUT_SETTING && !(TIMEOUT_WANTED >= 1)
+  ? `AGENT_DISCIPLINE_TOOL_TIMEOUT_MS=${TIMEOUT_SETTING} isn't a number of milliseconds above 0, so it was ignored`
+  : null;
+const TIMEOUT_CAP = TIMEOUT_SETTING && !TIMEOUT_SETTING_PROBLEM ? TIMEOUT_WANTED : Infinity;
+
+// CI=false and CI=0 are set but mean "not CI".
+export const inCI = (env = process.env) => Boolean(env.CI) && !/^(?:false|0)$/i.test(env.CI.trim());
 export function runTool(cmd, args, { cwd, timeout: wanted = 240000, env, baseEnv = process.env, isFindings = () => false } = {}) {
   const timeout = Math.min(wanted, TIMEOUT_CAP);
   const r = spawnSync(cmd, args, {
@@ -221,7 +232,8 @@ function resolveExtends(fromConfig, spec) {
 function strictIn(path, root, seen = new Set()) {
   const name = relative(root, path) || path;
   if (seen.has(path)) return { broken: `${name} extends itself` };
-  seen.add(path);
+  // Only this chain counts: two extends sharing a base is a diamond, not a loop.
+  const chain = new Set(seen).add(path);
   const config = readJsonc(path);
   if (!config) return { broken: `${name} can't be read as JSON` };
   if (config.compilerOptions?.strict !== undefined) return { strict: config.compilerOptions.strict === true };
@@ -230,7 +242,7 @@ function strictIn(path, root, seen = new Set()) {
     if (typeof spec !== "string") return { broken: `${name} has an extends that isn't a string` };
     const target = resolveExtends(path, spec);
     if (!target) return { unknown: `${name} extends ${spec}, which isn't installed or doesn't exist` };
-    const r = strictIn(target, root, seen);
+    const r = strictIn(target, root, chain);
     if (r.strict !== undefined || r.unknown || r.broken) return r;
   }
   return {};

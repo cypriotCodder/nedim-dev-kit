@@ -8,10 +8,11 @@ import { join } from "node:path";
 export const EXCEPTIONS_FILE = ".audit-exceptions.json";
 const RULES = ["provider-key", "hardcoded-secret", "env-file"];
 
-// `*` stays inside a folder, `**` crosses folders.
+// `*` stays inside a folder, `**` crosses folders. A path without wildcards also matches the files
+// under it, so `tests/fixtures` covers the folder, as the README says.
 const globToRegex = (glob) => new RegExp(`^${glob
   .replace(/[.+^${}()|[\]\\?]/g, "\\$&")
-  .replace(/\*\*\/|\*\*|\*/g, (m) => (m === "**/" ? "(?:.*/)?" : m === "**" ? ".*" : "[^/]*"))}$`);
+  .replace(/\*\*\/|\*\*|\*/g, (m) => (m === "**/" ? "(?:.*/)?" : m === "**" ? ".*" : "[^/]*"))}${glob.includes("*") ? "" : "(?:/.*)?"}$`);
 
 // `2999-13-01` is an Invalid Date, whose toISOString() throws.
 const validDate = (s) => {
@@ -23,20 +24,22 @@ const validDate = (s) => {
 const MAX_DAYS = 366;
 const daysFrom = (today, date) => (new Date(`${date}T00:00:00Z`) - new Date(`${today}T00:00:00Z`)) / 864e5;
 
-// Folder and file names no project uses, with the extensions projects do use. A glob that matches
-// one of these matches every such file wherever it is, so it names nothing in particular.
-const EXTENSIONS = ["ts", "tsx", "js", "jsx", "mjs", "py", "go", "rs", "java", "json", "yml", "md", "env", "txt"];
-const ANYWHERE = EXTENSIONS.flatMap((ext) => [`zq7x.${ext}`, `zq7x/kv3w.${ext}`, `zq7x/kv3w/pj9m.${ext}`]);
-const normalize = (path) => path.replace(/^(?:\.\/)+/, "");
+// A glob names nothing in particular when no folder before its last part is a real name and the last
+// part has a wildcard: `**/*.yaml`, `*/*.ts` and `**/.env*` match every such file wherever it is.
+// Judged by shape, not by trying sample files, so every extension and dotfile is covered.
+const WILD = /^\*+$/;
+const matchesAnyKind = (glob) => {
+  const parts = glob.split("/");
+  return parts.at(-1).includes("*") && parts.slice(0, -1).every((p) => WILD.test(p));
+};
+const normalize = (path) => path.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
 
 function problemWith(e, rules = RULES, today) {
   if (!e || typeof e !== "object") return "not an object";
   if (!rules.includes(e.rule)) return rules === RULES ? `rule must be one of ${RULES.join(", ")}` : `unknown rule "${e.rule}"`;
   if (typeof e.path !== "string" || !normalize(e.path)) return "path is required";
   if (/^\/|^[A-Za-z]:[\\/]|(^|\/)\.\.(\/|$)/.test(e.path)) return "path must be relative to the project, without ..";
-  const glob = globToRegex(normalize(e.path));
-  const sample = ANYWHERE.find((p) => glob.test(p));
-  if (sample) return `path matches files anywhere (such as ${sample}): name the folder or file`;
+  if (matchesAnyKind(normalize(e.path))) return `path matches every file of a kind (${e.path}): name the folder or file`;
   if (typeof e.reason !== "string" || !e.reason.trim()) return "reason is required";
   if (!validDate(e.expires)) return "expires must be a date like 2027-01-31";
   if (daysFrom(today, e.expires) > MAX_DAYS) return `expires is more than a year ahead (${e.expires}): pick a date within a year, and look at it again then`;

@@ -4,6 +4,22 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-015: osv-scanner adds only the ecosystems the package manager didn't audit  (2026-11-06, status: accepted; supersedes part of ADR-013)
+
+**Context:** ADR-013 added osv-scanner's counts to the package manager's audit counts. The two overlap: an npm advisory both find was counted twice, and osv-scanner includes the dev dependencies that `npm audit --omit=dev` and `pnpm audit --prod` leave out on purpose. So a high advisory in a build tool failed the gate only on machines with osv-scanner installed.
+**Decision:** When the package manager's audit ran, osv-scanner's `npm` packages are left out and its other ecosystems (a Python or Go part of the repo) are added. When there's no such audit (no lockfile, `bun.lock`, Cargo), osv-scanner's counts are used whole, as before. Its full report is still saved as `osv.json`.
+**Alternatives:** Keeping osv-scanner's counts as context only (a vulnerable Python dependency beside a Node app would never reach the gate). Filtering osv-scanner to production dependencies (its JSON doesn't say which are dev dependencies for every lockfile).
+
+---
+
+## ADR-014: Exception paths are judged by their shape, and a plain path covers its folder  (2026-11-06, status: accepted; supersedes part of ADR-013)
+
+**Context:** ADR-013 refused an exception path if it matched sample files with 14 common extensions. A review of PR 6 found that every other kind got through: `**/*.yaml`, `**/*.sh`, `**/*.pem` and `**/.env*` were all accepted, so one entry could accept every tracked `.env` file. The README also said a path could name a folder, but `tests/fixtures` matched no file under it.
+**Decision:** A path is refused when its last part has a wildcard and every part before it is only wildcards (`**/*.yaml`, `*/*.ts`, `**/.env*`, `*.ts`). A path that names a folder or file anywhere in it is accepted (`fixtures/*.ts`, `**/fixtures/**`, `**/.env`). A path without wildcards also matches the files under it, and a trailing `/` is dropped.
+**Alternatives:** More sample extensions (there's always one more). Building samples from the glob's own suffix (handles `*.yaml` but needs care for every glob form; the shape rule is simpler and covers them all). Changing the README to require `tests/fixtures/**` (the plain folder is what people write first).
+
+---
+
 ## ADR-013: Evidence that can't be read is named, and accepted risks expire within a year  (2026-11-05, status: accepted)
 **Context:** Some inputs gave wrong scores with no warning. A rule named `constructor` scored `NaN/10`. CI outside GitHub and GitLab got the `no-ci` cap. A tsconfig using `extends` read as unknown and quietly skipped `strict-off`. A broken `package.json` read as having no dependencies. A finding downgraded to `possible` showed as fixed. A summary copied into another clone was checked against the first clone's HEAD. PR 4 also left gate results that passed without having looked: no dependency audit, no gitleaks in CI, `--src` naming a missing folder, a crashed `npm outdated`. Exceptions could last forever (`9999-12-31`) or name every file of a type (`**/*.js`).
 **Decision:** Rule lookups use own keys only. CI is detected for 15 systems, and `inventory.ci` names them. Strictness is its own `strict` tool, which follows `extends` (paths, packages and arrays) and project references without needing TypeScript. A config it can't parse applies `strict-off` as `not-ruled-out`, and one extending an uninstalled package is a gap. A broken `package.json` applies `no-lockfile` as `not-ruled-out`. Appendix findings keep earlier ids, are stored in `latest.json` and reported in `comparison.downgraded`. `summary.root` only counts when the summary or the current folder is inside it. The gate fails when online and dependencies exist but nothing could audit them, folds osv-scanner counts in, requires gitleaks when `CI` is set, and lists what a pass didn't assess. Secret names match wherever the secret word sits, and values are checked to rule out message keys, env references, paths, identifiers and settings. Redaction also covers URL passwords, `Bearer` tokens, newer key formats and unquoted `NAME=value`. UTF-16 files are scanned. Each run removes the outputs of the last one. Exception expiries must be within 366 days, paths are refused if they match random sample files with common extensions, and a leading `./` is dropped. `AGENT_DISCIPLINE_TOOL_TIMEOUT_MS` lowers every tool's time limit. These stay in rubric 2, which hasn't been released.
