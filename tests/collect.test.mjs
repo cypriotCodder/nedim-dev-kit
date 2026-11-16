@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, symlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test, describe } from "node:test";
 import { FAKE_AWS_KEY, PLUGIN as PLUGIN_DIR, collect, fakeBin, fakeLocalBin, gitCommitAll, gitInit, project, write } from "./helpers.mjs";
 
@@ -502,7 +502,7 @@ describe("collect: running tools safely", () => {
 
   test("a test runner that won't start blocks the gate", () => {
     const root = repo({ "package.json": `{"packageManager":"pnpm@9.0.0","scripts":{"test":"x"}}\n`, "src/a.ts": "export {};\n" });
-    const r = collect(root, ["--offline", "--gate"], { env: { PATH: `${root}/empty:${dirname(process.execPath)}:/usr/bin:/bin` } });
+    const r = collect(root, ["--offline", "--gate"], { env: { PATH: `${root}/empty:/usr/bin:/bin` } });
     assert.equal(r.code, 1);
     assert.match(r.output, /tests did not finish/);
   });
@@ -1381,4 +1381,32 @@ describe("collect: PR 8 (risks the PR 6 review found)", () => {
       assert.equal(collect(root, GATE, { env: { CI: "true", PATH: isolatedPath(root) } }).code, 1);
     });
   });
+});
+
+describe("collect: PR 9 (false positives a real audit hit)", () => {
+  // Municipal-Super-App, 2026-11-08: design-token names in a design file capped security at 5.
+  for (const [what, line] of [
+    ["a CSS custom property name", `{"token": "--color-neutral-600", "value": "#53655b"}`],
+    ["a CSS custom property name without digits", `{"token": "--color-surface-muted"}`],
+    ["a var() reference", `{"token": "var(--color-neutral-600)"}`],
+    ["an SCSS variable", `{"token": "$color-neutral-600"}`],
+    ["a design-token alias", `{"token": "{color.neutral.600}"}`],
+    ["a token name with a number segment", `{"token": "color-neutral-600"}`],
+  ]) {
+    test(`${what} isn't a secret`, () => {
+      const r = collect(repo({ "docs/design/home.page.json": `${line}\n`, "src/a.ts": "export {};\n" }), GATE);
+      assert.equal(r.code, 0, r.output);
+    });
+  }
+  for (const [what, value] of [
+    ["a real secret value", "Xk9mQ2pLw7Rt5vZb3nHc"],
+    ["a mixed-case key behind --", "--Xk9mQ2pLw7Rt5vZb3nHc"],
+    ["a Mailgun-style key", "key-3ax6xnjp29jd6fds4gc373sgvjxteol0"],
+    ["a long digit run behind a word", "key-12345678901234"],
+    ["a random key in braces", "{Xk9mQ2pLw7Rt5vZb3nHc}"],
+  ]) {
+    test(`${what} still blocks`, () => {
+      assert.equal(collect(repo({ "src/a.ts": `const token = "${value}";\n` }), GATE).code, 1);
+    });
+  }
 });
