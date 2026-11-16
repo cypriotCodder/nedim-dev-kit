@@ -962,11 +962,10 @@ const eslintReport = (root, files) => {
 };
 
 describe("collect: PR 6", () => {
-  const pr6 = {};
 
   describe("CI that isn't on GitHub or GitLab", () => {
     for (const file of [".circleci/config.yml", "Jenkinsfile", "azure-pipelines.yml", "bitbucket-pipelines.yml"]) {
-      test(`${file} counts as CI`, pr6, () => {
+      test(`${file} counts as CI`, () => {
         const { inventory } = collect(repo({ [file]: "x: 1\n", "src/a.js": "export {};\n" })).summary.metrics;
         assert.equal(inventory.hasCI, true);
       });
@@ -978,46 +977,46 @@ describe("collect: PR 6", () => {
 
   describe("strict, through extends", () => {
     const strictOf = (files) => collect(repo({ "src/a.ts": "export {};\n", ...files })).summary;
-    test("off in the config it extends", pr6, () => {
+    test("off in the config it extends", () => {
       assert.equal(strictOf({ "tsconfig.json": `{"extends":"./tsconfig.base.json"}`, "tsconfig.base.json": `{"compilerOptions":{"strict":false}}` }).metrics.tsStrict, false);
     });
-    test("on in the config it extends", pr6, () => {
+    test("on in the config it extends", () => {
       assert.equal(strictOf({ "tsconfig.json": `{"extends":"./tsconfig.base.json"}`, "tsconfig.base.json": `{"compilerOptions":{"strict":true}}` }).metrics.tsStrict, true);
     });
-    test("not set anywhere in the chain is off", pr6, () => {
+    test("not set anywhere in the chain is off", () => {
       assert.equal(strictOf({ "tsconfig.json": `{"extends":"./a.json"}`, "a.json": `{"extends":"./b"}`, "b.json": `{}` }).metrics.tsStrict, false);
     });
-    test("from an installed package", pr6, () => {
+    test("from an installed package", () => {
       const files = { "tsconfig.json": `{"extends":"@tsconfig/strictest/tsconfig.json"}`, "node_modules/@tsconfig/strictest/tsconfig.json": `{"compilerOptions":{"strict":true}}` };
       assert.equal(strictOf(files).metrics.tsStrict, true);
     });
-    test("from an installed package named by its folder", pr6, () => {
+    test("from an installed package named by its folder", () => {
       const files = { "tsconfig.json": `{"extends":"@tsconfig/node22"}`, "node_modules/@tsconfig/node22/tsconfig.json": `{"compilerOptions":{"strict":true}}` };
       assert.equal(strictOf(files).metrics.tsStrict, true);
     });
-    test("the last of several extends wins", pr6, () => {
+    test("the last of several extends wins", () => {
       const files = { "tsconfig.json": `{"extends":["./on.json","./off.json"]}`, "on.json": `{"compilerOptions":{"strict":true}}`, "off.json": `{"compilerOptions":{"strict":false}}` };
       assert.equal(strictOf(files).metrics.tsStrict, false);
     });
-    test("a referenced project with strict off is off", pr6, () => {
+    test("a referenced project with strict off is off", () => {
       const files = { "tsconfig.json": `{"files":[],"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}]}`, "tsconfig.app.json": `{"compilerOptions":{"strict":true}}`, "tsconfig.node.json": `{"compilerOptions":{"strict":false}}` };
       assert.equal(strictOf(files).metrics.tsStrict, false);
     });
-    test("is read without TypeScript installed", pr6, () => {
+    test("is read without TypeScript installed", () => {
       assert.equal(strictOf({ "tsconfig.json": `{"compilerOptions":{"strict":false}}` }).metrics.tsStrict, false);
     });
-    test("a package that isn't installed is unknown, and says why", pr6, () => {
+    test("a package that isn't installed is unknown, and says why", () => {
       const s = strictOf({ "tsconfig.json": `{"extends":"@tsconfig/strictest/tsconfig.json"}` });
       assert.equal(s.metrics.tsStrict, null);
       assert.equal(s.tools.strict.status, "skipped");
       assert.match(s.tools.strict.skipped, /@tsconfig\/strictest/);
     });
-    test("a tsconfig that can't be parsed has failed", pr6, () => {
+    test("a tsconfig that can't be parsed has failed", () => {
       assert.equal(strictOf({ "tsconfig.json": `{ nope` }).tools.strict.status, "failed");
     });
   });
 
-  test("a broken package.json doesn't read as having no dependencies", pr6, () => {
+  test("a broken package.json doesn't read as having no dependencies", () => {
     assert.equal(collect(repo({ "package.json": "{ nope" })).summary.metrics.lockfile.hasDependencies, null);
   });
 
@@ -1029,12 +1028,12 @@ describe("collect: PR 6", () => {
       ["a GitHub fine-grained token", `const t = "${["github", "pat", "11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789"].join("_")}";`],
       ["an OpenAI project key", `const t = "${["sk", "proj", "abcdefghijklmnopqrstuvwxyz012345"].join("-")}";`],
     ]) {
-      test(`${what} blocks the gate`, pr6, () => {
+      test(`${what} blocks the gate`, () => {
         assert.equal(collect(repo({ "src/config.ts": `${line}\n` }), GATE).code, 1);
       });
     }
     for (const [what, encode] of [["with a BOM", (s) => Buffer.from(`﻿${s}`, "utf16le")], ["without a BOM", (s) => Buffer.from(s, "utf16le")]]) {
-      test(`a key in a UTF-16 file ${what} is found`, pr6, () => {
+      test(`a key in a UTF-16 file ${what} is found`, () => {
         assert.equal(collect(repo({ "config/app.ps1": encode(`$k = "${FAKE_AWS_KEY}"\r\n`) }), GATE).code, 1);
       });
     }
@@ -1051,7 +1050,7 @@ describe("collect: PR 6", () => {
       ["an OpenAI project key", ["sk", "proj", "abcdefghijklmnopqrstuvwxyz"].join("-"), "abcdefghijklmnopqrstuvwxyz"],
       ["an unquoted PASSWORD=", "DB_PASSWORD=Xk9mQ2pLw7", "Xk9mQ2pLw7"],
     ]) {
-      test(`removes ${what} from tool output`, pr6, () => {
+      test(`removes ${what} from tool output`, () => {
         const root = repo({ "src/a.js": "export {};\n" });
         eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: text }] }]);
         assert.doesNotMatch(collect(root).raw("eslint.json"), new RegExp(secret));
@@ -1062,7 +1061,7 @@ describe("collect: PR 6", () => {
       eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: `apiKey: "${LONG_SECRET}"` }] }]);
       assert.doesNotMatch(collect(root).raw("eslint.json"), new RegExp(LONG_SECRET));
     });
-    test("console output is redacted too", pr6, () => {
+    test("console output is redacted too", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       const binDir = join(root, "fake-path");
       const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
@@ -1072,7 +1071,7 @@ describe("collect: PR 6", () => {
   });
 
   describe("false gate failures", () => {
-    test(".env.development holding settings named like secrets passes", pr6, () => {
+    test(".env.development holding settings named like secrets passes", () => {
       const r = collect(repo({ "src/a.ts": "export {};\n", ".env.development": "ACCESS_TOKEN_EXPIRES_IN=15m\nPASSWORD_MIN_LENGTH=8\nREFRESH_TOKEN_TTL=604800\nAUTH_TOKEN_ENABLED=true\n" }), GATE);
       assert.equal(r.code, 0, r.output);
     });
@@ -1085,7 +1084,7 @@ describe("collect: PR 6", () => {
       ["a file path", `privateKey: "./certs/server-private-key.pem"`],
       ["a snake_case identifier", `const tokenName = "refresh_token_cookie_name";`],
     ]) {
-      test(`${what} isn't a secret`, pr6, () => {
+      test(`${what} isn't a secret`, () => {
         const r = collect(repo({ "src/a.ts": `${line}\n` }), GATE);
         assert.equal(r.code, 0, r.output);
       });
@@ -1105,21 +1104,21 @@ describe("collect: PR 6", () => {
       ["a bun lockfile", { "package.json": `{"dependencies":{"x":"1"}}`, "bun.lock": "{}" }],
       ["a Cargo.lock", { "Cargo.toml": "[package]\n", "Cargo.lock": "" }],
     ]) {
-      test(`${what}, with no dependency audit, fails the gate`, pr6, () => {
+      test(`${what}, with no dependency audit, fails the gate`, () => {
         const root = repo({ "src/a.js": "export {};\n", ...files });
         const r = collect(root, ONLINE_GATE, { binDir: binWith(root) });
         assert.equal(r.code, 1, r.output);
         assert.match(r.output, /vulnerabilities/);
       });
     }
-    test("osv-scanner's high findings fail the gate", pr6, () => {
+    test("osv-scanner's high findings fail the gate", () => {
       const root = repo({ "src/a.js": "export {};\n", "Cargo.toml": "[package]\n", "Cargo.lock": "" });
       const osv = JSON.stringify({ results: [{ packages: [{ package: { name: "x" }, groups: [{ ids: ["GHSA-1"], max_severity: "8.1" }] }] }] });
       const r = collect(root, ONLINE_GATE, { binDir: binWith(root, { "osv-scanner": `echo '${osv}'; exit 1` }) });
       assert.equal(r.code, 1, r.output);
       assert.equal(r.summary.metrics.vulnerableDeps.high, 1);
     });
-    test("a clean osv-scanner passes a Cargo project", pr6, () => {
+    test("a clean osv-scanner passes a Cargo project", () => {
       const root = repo({ "src/a.js": "export {};\n", "Cargo.toml": "[package]\n", "Cargo.lock": "" });
       const r = collect(root, ONLINE_GATE, { binDir: binWith(root, { "osv-scanner": `echo '{"results":[]}'; exit 0` }) });
       assert.equal(r.code, 0, r.output);
@@ -1128,13 +1127,13 @@ describe("collect: PR 6", () => {
       const root = repo({ "src/a.js": "export {};\n", "package.json": `{"name":"x"}` });
       assert.equal(collect(root, ONLINE_GATE, { binDir: binWith(root) }).code, 0);
     });
-    test("gitleaks missing in CI fails the gate", pr6, () => {
+    test("gitleaks missing in CI fails the gate", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       const r = collect(root, GATE, { env: { CI: "1", PATH: isolatedPath(root) } });
       assert.equal(r.code, 1, r.output);
       assert.match(r.output, /gitleaks/);
     });
-    test("a gate that passes lists what it didn't assess", pr6, () => {
+    test("a gate that passes lists what it didn't assess", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       const r = collect(root, GATE, { env: { PATH: isolatedPath(root) } });
       assert.equal(r.code, 0, r.output);
@@ -1143,18 +1142,18 @@ describe("collect: PR 6", () => {
   });
 
   describe("results that read as clean when nothing ran", () => {
-    test("--src naming a missing folder stops with an error", pr6, () => {
+    test("--src naming a missing folder stops with an error", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       const r = spawnSync(process.execPath, [join(PLUGIN_DIR, "skills/audit/collect.mjs"), ".", "--offline", "--no-tests", "--src", "scr"], { cwd: root, encoding: "utf8" });
       assert.equal(r.status, 2, r.stdout + r.stderr);
       assert.match(r.stderr, /scr/);
     });
-    test("ESLint linting no files has failed", pr6, () => {
+    test("ESLint linting no files has failed", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       eslintReport(root, []);
       assert.equal(collect(root).summary.tools.eslint.status, "failed");
     });
-    test("ESLint's 'File ignored' notices aren't warnings", pr6, () => {
+    test("ESLint's 'File ignored' notices aren't warnings", () => {
       const root = repo({ "src/a.js": "export {};\n", "vite.config.js": "export default {};\n" });
       eslintReport(root, [
         { filePath: "vite.config.js", errorCount: 0, warningCount: 1, messages: [{ ruleId: null, severity: 1, message: 'File ignored because of a matching ignore pattern. Use "--no-ignore" to override.' }] },
@@ -1170,7 +1169,7 @@ describe("collect: PR 6", () => {
       return collect(root, ["--no-tests"], { binDir }).summary;
     };
     for (const [what, body] of [["with no output", `echo "npm ERR! crash" >&2; exit 1`], ["with an error report", `echo '{"error":{"code":"E404"}}'; exit 1`]]) {
-      test(`a crashed npm outdated ${what} records no counts`, pr6, () => {
+      test(`a crashed npm outdated ${what} records no counts`, () => {
         const s = npmProject(body);
         assert.equal(s.metrics.outdated, undefined);
         assert.equal(s.tools.vulnerabilities.outdated, "failed");
@@ -1179,7 +1178,7 @@ describe("collect: PR 6", () => {
     test("npm outdated with nothing outdated counts zero", () => {
       assert.deepEqual(npmProject("exit 0").metrics.outdated, { total: 0, majorBehind: 0 });
     });
-    test("evidence from an earlier run is removed", pr6, () => {
+    test("evidence from an earlier run is removed", () => {
       const root = repo({ "src/a.js": "export {};\n" });
       write(root, ".audit/raw/outdated.json", `{"stale":{}}`);
       write(root, ".audit/raw/notes.md", "mine");
@@ -1187,7 +1186,7 @@ describe("collect: PR 6", () => {
       assert.ok(!existsSync(join(root, ".audit/raw/outdated.json")));
       assert.ok(existsSync(join(root, ".audit/raw/notes.md")), "removed a file it didn't write");
     });
-    test("jscpd ignores the same folders as the rest of the audit", pr6, () => {
+    test("jscpd ignores the same folders as the rest of the audit", () => {
       const root = repo({ "package.json": "{}\n", "src/a.ts": "export {};\n" });
       const binDir = join(root, "fake-path");
       const args = join(root, "jscpd-args.txt");
@@ -1201,27 +1200,27 @@ describe("collect: PR 6", () => {
   describe("exceptions", () => {
     const SECRET = `export const k = "${FAKE_AWS_KEY}";\n`;
     const gateOn = (entry, file = "fixtures/a.ts") => collect(repo({ [file]: SECRET, ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", reason: "Docs key", expires: daysAhead(30), ...entry }] }) }), GATE);
-    test("a folder named any/ can be excepted", pr6, () => assert.equal(gateOn({ path: "any/**" }, "any/a.ts").code, 0));
+    test("a folder named any/ can be excepted", () => assert.equal(gateOn({ path: "any/**" }, "any/a.ts").code, 0));
     for (const path of ["**/*.ts", "*.ts", "**/*"]) {
-      test(`${path} matches every file of a kind, and is refused`, pr6, () => {
+      test(`${path} matches every file of a kind, and is refused`, () => {
         const r = gateOn({ path });
         assert.equal(r.summary.tools.exceptions.status, "failed");
         assert.match(r.output, /matches/);
       });
     }
-    test("a month that doesn't exist is refused, without crashing", pr6, () => {
+    test("a month that doesn't exist is refused, without crashing", () => {
       const r = gateOn({ path: "fixtures/*.ts", expires: "2999-13-01" });
       assert.equal(r.summary.tools.exceptions.status, "failed");
       assert.doesNotMatch(r.output, /RangeError/);
     });
-    test("an expiry more than a year ahead is refused", pr6, () => {
+    test("an expiry more than a year ahead is refused", () => {
       const r = gateOn({ path: "fixtures/*.ts", expires: "9999-12-31" });
       assert.equal(r.summary.tools.exceptions.status, "failed");
       assert.match(r.output, /year/);
     });
     test("an expiry today still applies", () => assert.equal(gateOn({ path: "fixtures/*.ts", expires: today() }).code, 0));
-    test("a path starting with ./ matches", pr6, () => assert.equal(gateOn({ path: "./fixtures/a.ts" }).code, 0));
-    test("an entry nothing matches is printed", pr6, () => {
+    test("a path starting with ./ matches", () => assert.equal(gateOn({ path: "./fixtures/a.ts" }).code, 0));
+    test("an entry nothing matches is printed", () => {
       const root = repo({ "src/a.ts": "export {};\n", ".audit-exceptions.json": JSON.stringify({ exceptions: [{ rule: "provider-key", path: "old/key.ts", reason: "Docs key", expires: daysAhead(30) }] }) });
       assert.match(collect(root).output, /old\/key\.ts/);
     });
@@ -1250,7 +1249,7 @@ describe("collect: PR 6", () => {
       const r = collect(repo(Object.fromEntries(names.map((n) => [`${n}/a.js`, "export {};\n"]))));
       assert.deepEqual([...r.summary.metrics.inventory.srcDirs].sort(), [...names].sort());
     });
-    test("a tool that runs out of time is timed-out, and blocks the gate", pr6, () => {
+    test("a tool that runs out of time is timed-out, and blocks the gate", () => {
       const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": "export {};\n" });
       fakeLocalBin(root, "tsc", "sleep 5");
       const r = collect(root, GATE, { env: { AGENT_DISCIPLINE_TOOL_TIMEOUT_MS: "300" } });

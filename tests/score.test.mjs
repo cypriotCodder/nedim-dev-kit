@@ -851,10 +851,9 @@ describe("score: coverage gaps beside the grade", () => {
 });
 
 describe("score: PR 6", () => {
-  const pr6 = {};
 
   for (const rule of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
-    test(`"${rule}" isn't a rule, though every object has it`, pr6, () => {
+    test(`"${rule}" isn't a rule, though every object has it`, () => {
       const r = score(project(), { input: { findings: [finding({ rule })] } });
       assert.equal(r.code, 2, r.output);
       assert.match(r.output, /rules\.json/);
@@ -865,7 +864,7 @@ describe("score: PR 6", () => {
   describe("a finding the verifier downgrades to possible", () => {
     const run = (root, confidence) => score(root, { input: { findings: [finding({ confidence })] } }).score;
 
-    test("isn't reported as fixed", pr6, () => {
+    test("isn't reported as fixed", () => {
       const root = project();
       run(root, "confirmed");
       const { comparison: c, appendix } = run(root, "possible");
@@ -874,7 +873,7 @@ describe("score: PR 6", () => {
       assert.equal(appendix[0].id, "SEC-001");
     });
 
-    test("isn't closed in the baseline, and keeps its id when it counts again", pr6, () => {
+    test("isn't closed in the baseline, and keeps its id when it counts again", () => {
       const root = project();
       run(root, "confirmed");
       run(root, "possible");
@@ -885,7 +884,7 @@ describe("score: PR 6", () => {
     });
   });
 
-  test("a summary copied into another clone is checked against that clone's HEAD", pr6, () => {
+  test("a summary copied into another clone is checked against that clone's HEAD", () => {
     const original = gitInit(project({ "a.ts": "1\n" }));
     gitCommitAll(original);
     const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: original, encoding: "utf8" }).stdout.trim();
@@ -897,21 +896,21 @@ describe("score: PR 6", () => {
     assert.ok(!existsSync(join(original, "docs")), "wrote into the other clone");
   });
 
-  test("a broken package.json can't rule out no-lockfile", pr6, () => {
+  test("a broken package.json can't rule out no-lockfile", () => {
     const r = score(project(), { summary: summaryOf({ metrics: { lockfile: { hasDependencies: null, name: null } } }), input: { anchors: anchors(10) } });
     const t = r.score.categories.tooling;
     assert.equal(t.score, 4);
     assert.equal(t.limits.find((l) => l.id === "no-lockfile").source, "not-ruled-out");
   });
 
-  test("strictness that can't be read is a gap", pr6, () => {
+  test("strictness that can't be read is a gap", () => {
     const r = score(project(), { summary: summaryOf({ tools: { strict: tool("skipped", { skipped: "extends @tsconfig/strictest, which isn't installed" }) }, metrics: { tsStrict: null } }), input: { anchors: anchors(10) } });
     const m = r.score.categories.maintainability;
     assert.equal(m.score, 10);
     assert.match(m.gaps.join(), /strict: skipped/);
   });
 
-  test("a tsconfig that can't be parsed can't rule out strict-off", pr6, () => {
+  test("a tsconfig that can't be parsed can't rule out strict-off", () => {
     const r = score(project(), { summary: summaryOf({ tools: { strict: tool("failed", { reason: "tsconfig.json isn't valid JSON" }) }, metrics: { tsStrict: null } }), input: { anchors: anchors(10) } });
     assert.equal(r.score.categories.maintainability.limits.find((l) => l.id === "strict-off").source, "not-ruled-out");
   });
