@@ -916,3 +916,66 @@ describe("score: PR 6", () => {
     assert.equal(r.score.categories.maintainability.limits.find((l) => l.id === "strict-off").source, "not-ruled-out");
   });
 });
+
+describe("score: PR 9 (moving a finding to another rule)", () => {
+  // Municipal-Super-App, 2026-11-08: the audit moved REL-007 from non-transactional-writes (cap 5)
+  // to other-reliability on its own judgment. That changed the score, and nothing recorded it.
+  const original = (over = {}) => finding({ category: "reliability", severity: "medium", rule: "non-transactional-writes", location: "src/cv.ts:10", title: "orphaned CV files", ...over });
+  const moved = (over = {}) => original({ rule: "other-reliability", reclassifiedFrom: "non-transactional-writes", ...over });
+  const REASON = "files, not database writes";
+
+  test("a moved finding is listed in score.json with where it came from and why", () => {
+    const r = score(project(), { input: { findings: [moved({ reclassifiedReason: REASON })] } });
+    assert.equal(r.code, 0, r.output);
+    assert.deepEqual(r.score.reclassified?.map(({ from, to }) => ({ from, to })), [{ from: "non-transactional-writes", to: "other-reliability" }]);
+    const [entry] = r.score.reclassified;
+    assert.equal(entry.reason, REASON);
+    assert.equal(entry.id, r.score.findings[0].id);
+    assert.equal(entry.liftsCap, true); // capped at 5 before, uncapped now
+    assert.match(r.output, /Moved REL-001 from non-transactional-writes to other-reliability, which lifts a cap/);
+  });
+  test("a moved finding without a reason is refused", () => {
+    assert.notEqual(score(project(), { input: { findings: [moved()] } }).code, 0);
+  });
+  test("a move from a rule that doesn't exist is refused", () => {
+    assert.notEqual(score(project(), { input: { findings: [moved({ reclassifiedFrom: "no-such-rule", reclassifiedReason: "x" })] } }).code, 0);
+  });
+  test("a move from another category's rule is refused", () => {
+    const r = score(project(), { input: { findings: [moved({ reclassifiedFrom: "xss", reclassifiedReason: "x" })] } });
+    assert.notEqual(r.code, 0);
+    assert.match(r.output, /not a reliability rule/);
+  });
+  test("a move to the rule it already has is refused", () => {
+    assert.notEqual(score(project(), { input: { findings: [original({ reclassifiedFrom: "non-transactional-writes", reclassifiedReason: "x" })] } }).code, 0);
+  });
+  test("a reason without a move is refused", () => {
+    assert.notEqual(score(project(), { input: { findings: [original({ reclassifiedReason: "x" })] } }).code, 0);
+  });
+  test("a moved finding keeps its id, and isn't fixed and new in the comparison", () => {
+    const root = project();
+    const first = score(root, { input: { findings: [original()] } });
+    assert.equal(first.code, 0, first.output);
+    const id = first.score.findings[0].id;
+    const second = score(root, { input: { findings: [moved({ reclassifiedReason: REASON })] } });
+    assert.equal(second.code, 0, second.output);
+    assert.equal(second.score.findings[0].id, id);
+    assert.deepEqual(second.score.comparison.new, []);
+    assert.deepEqual(second.score.comparison.fixed, []);
+    assert.deepEqual(second.score.comparison.stillOpen, [id]);
+    // The next audit, with the finding already under its new rule, still matches it.
+    const third = score(root, { input: { findings: [moved({ reclassifiedFrom: undefined })] } });
+    assert.equal(third.code, 0, third.output);
+    assert.equal(third.score.findings[0].id, id);
+    assert.deepEqual(third.score.reclassified, []);
+  });
+  test("latest.json records the move", () => {
+    const root = project();
+    assert.equal(score(root, { input: { findings: [moved({ reclassifiedReason: REASON })] } }).code, 0);
+    assert.deepEqual(latest(root).reclassified.map(({ from, to, reason }) => ({ from, to, reason })), [{ from: "non-transactional-writes", to: "other-reliability", reason: REASON }]);
+  });
+  test("a move to a rule with a lower cap doesn't lift one", () => {
+    const r = score(project(), { input: { findings: [original({ rule: "non-transactional-writes", reclassifiedFrom: "other-reliability", reclassifiedReason: "x" })] } });
+    assert.equal(r.code, 0, r.output);
+    assert.equal(r.score.reclassified[0].liftsCap, false);
+  });
+});

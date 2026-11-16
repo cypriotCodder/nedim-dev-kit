@@ -184,6 +184,12 @@ for (const f of Array.isArray(findings) ? findings : []) {
   if (!CATEGORIES.includes(f?.category)) { problems.push(`${label}: unknown category "${f?.category}"`); continue; }
   // Own keys only: every object has `constructor`, and its "cap" would be a function (NaN/10).
   if (!Object.hasOwn(RULES[f.category], f.rule)) problems.push(`${label}: not a ${f.category} rule in rules.json (use other-${f.category} if nothing fits)`);
+  // Moving a finding can lift a cap, so the move has to be within the category, recorded and explained.
+  if (f.reclassifiedFrom !== undefined) {
+    if (!Object.hasOwn(RULES[f.category], f.reclassifiedFrom)) problems.push(`${label}: reclassifiedFrom "${f.reclassifiedFrom}" is not a ${f.category} rule in rules.json`);
+    else if (f.reclassifiedFrom === f.rule) problems.push(`${label}: reclassifiedFrom is the rule it already has`);
+    if (typeof f.reclassifiedReason !== "string" || !f.reclassifiedReason.trim()) problems.push(`${label}: a moved finding needs reclassifiedReason`);
+  } else if (f.reclassifiedReason !== undefined) problems.push(`${label}: reclassifiedReason without reclassifiedFrom`);
   if (!SEVERITIES.includes(f.severity)) problems.push(`${label}: unknown severity "${f.severity}"`);
   if (!CONFIDENCES.includes(f.confidence)) problems.push(`${label}: unknown confidence "${f.confidence}"`);
   if (typeof f.location !== "string" || !locationParts(f.location).length) problems.push(`${f.rule}: location is required`);
@@ -205,6 +211,10 @@ if (problems.length) refuse(problems);
 
 // ---------- Finding ids: the same problem keeps its id between audits ----------
 const identity = (f) => `${f.rule}|${fileOf(f.location || f.file || "")}${titleIfOther(f)}`;
+// A finding moved to another rule is still the same problem: look it up under its old rule too,
+// or it would show as fixed and new, and the move would hide in the trend.
+const claim = (f) => unclaimed.get(identity(f))?.shift()
+  || (f.reclassifiedFrom ? unclaimed.get(identity({ ...f, rule: f.reclassifiedFrom }))?.shift() : undefined);
 
 // The appendix too: a finding the verifier only called possible keeps its id for when it counts again.
 const previousEntries = [...(previous?.findings || []), ...(previous?.appendix || []), ...(previous?.closed || [])].filter((f) => f.id);
@@ -234,7 +244,7 @@ const riskFor = (f) => {
 
 const counted = findings.filter((f) => f.confidence !== "possible");
 const results = counted.map((f) => {
-  const match = unclaimed.get(identity(f))?.shift();
+  const match = claim(f);
   const risk = riskFor(f);
   return {
     ...f, id: match?.id || nextId(f.category), file: fileOf(f.location), status: risk ? "accepted" : "open",
@@ -245,7 +255,7 @@ const results = counted.map((f) => {
 // After the counted findings, which claim ids first. Matched to earlier findings but never given a
 // new id: an unconfirmed problem shouldn't use up a number.
 const appendix = findings.filter((f) => f.confidence === "possible").map((f) => {
-  const match = unclaimed.get(identity(f))?.shift();
+  const match = claim(f);
   return { ...f, ...(match ? { id: match.id } : {}), file: fileOf(f.location), status: "possible", previous: match };
 });
 const live = results.filter((f) => f.status === "open");
@@ -351,13 +361,20 @@ function compare() {
   };
 }
 
+// A move to a rule with a higher cap (or none) is what changes a score, so it's flagged for the reader.
+const capOf = (category, rule) => RULES[category][rule] ?? Infinity;
+const reclassified = [...results, ...appendix].filter((f) => f.reclassifiedFrom).map((f) => ({
+  id: f.id ?? null, category: f.category, from: f.reclassifiedFrom, to: f.rule, reason: f.reclassifiedReason,
+  liftsCap: f.status === "open" && f.severity !== "low" && capOf(f.category, f.reclassifiedFrom) < capOf(f.category, f.rule),
+}));
+
 const date = (summary.generatedAt || new Date().toISOString()).slice(0, 10);
 const clean = ({ previous: _previous, ...f }) => f;
 const output = {
   rubricVersion: RUBRIC, mode, baseline: isFull, date,
   commit: summary.commit ?? null, uncommittedFiles: metrics.git?.uncommittedFiles ?? null,
   overall, grade, overallCapped, coverageGaps: gaps.length, counts, categories,
-  comparison: compare(),
+  comparison: compare(), reclassified,
   findings: results.map(clean).sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)),
   strengths, appendix: appendix.map(clean),
   expiredRisks: risks.expired.map(({ rule, path, reason, expires }) => ({ rule, path, reason, expires })),
@@ -396,7 +413,7 @@ if (isFull) {
     .map((f) => ({ id: f.id, rule: f.rule, file: f.file || fileOf(f.location || ""), title: f.title, status: f.status === "fixed" ? "fixed" : "gone" }));
   writeAtomic(join(auditDir, "latest.json"), `${JSON.stringify({
     date, commit: output.commit, uncommittedFiles: output.uncommittedFiles, rubricVersion: RUBRIC, mode,
-    overall, grade, scores: categories, counts, findings: output.findings, appendix: output.appendix, strengths, closed,
+    overall, grade, scores: categories, counts, findings: output.findings, appendix: output.appendix, strengths, closed, reclassified,
   }, null, 2)}\n`);
   writeAtomic(join(auditDir, "history.csv"), history);
 }
@@ -415,5 +432,6 @@ console.log(isFull
 if (gaps.length) console.log(`Coverage gaps: ${gaps.join("; ")}`);
 console.log(`Findings: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}; ${results.length - live.length} accepted; ${appendix.length} in the appendix`);
 if (output.comparison.downgraded?.length) console.log(`Downgraded to possible, so in the appendix and not fixed: ${output.comparison.downgraded.join(", ")}`);
+for (const r of reclassified) console.log(`Moved ${r.id ?? "(appendix)"} from ${r.from} to ${r.to}${r.liftsCap ? ", which lifts a cap" : ""}: ${r.reason}`);
 if (applicable.length !== CATEGORIES.length) console.log(`Not applicable: ${CATEGORIES.filter((c) => !applicable.includes(c)).join(", ")}`);
 console.log(isFull ? `Baseline written to ${auditDir}` : "Baseline not written: only a full audit replaces it.");

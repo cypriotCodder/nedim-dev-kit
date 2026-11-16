@@ -4,6 +4,15 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-016: A finding moved to another rule keeps its id, and the move is recorded  (2026-11-16, status: accepted)
+
+**Context:** A real audit (Municipal-Super-App, 2026-11-08) moved a finding from `non-transactional-writes` (cap 5) to `other-reliability` (no cap) on its own judgment. That raised the reliability score, and nothing in `score.json` said so. Because ids are matched by rule and file, the next audit would also have shown the finding as fixed under one id and new under another.
+**Decision:** A finding may carry `reclassifiedFrom` (a rule of the same category, different from its own) and a non-empty `reclassifiedReason`. `score.mjs` refuses either one without the other, or a `reclassifiedFrom` that isn't valid. When matching ids, a finding that has no match under its rule is looked up under `reclassifiedFrom`, so it keeps its id and stays in `stillOpen`. Every move is listed in `reclassified` in `score.json` and `latest.json`, and `liftsCap` marks the open, non-low ones whose old rule capped lower. The verifier suggests a move through `proposedRule`, separate from `rule`, which names the finding it judged. `rules.json` is unchanged, so the rubric stays at 2.
+**Alternatives:** Forbidding moves (a wrong rule then has to stay, and the score is wrong the other way). Recording moves without keeping ids (the trend shows a fix that didn't happen). Letting the verifier overwrite `rule` (the auditor's choice would be lost, along with the way to match the finding).
+**Consequences:** Plugin 1.6.0's score input has two new optional fields. Projects that copied `collect.mjs` and `lib/` for the CI gate should copy them again to pick up the secret-scan change in the same release.
+
+---
+
 ## ADR-015: osv-scanner adds only the ecosystems the package manager didn't audit  (2026-11-06, status: accepted; supersedes part of ADR-013)
 
 **Context:** ADR-013 added osv-scanner's counts to the package manager's audit counts. The two overlap: an npm advisory both find was counted twice, and osv-scanner includes the dev dependencies that `npm audit --omit=dev` and `pnpm audit --prod` leave out on purpose. So a high advisory in a build tool failed the gate only on machines with osv-scanner installed.
