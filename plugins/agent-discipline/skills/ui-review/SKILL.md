@@ -12,7 +12,7 @@ Target: $ARGUMENTS (default: the routes touched in the current diff).
 
 ## Setup (once per project)
 - Check for `playwright` in devDependencies. If it's missing, install it as a dev dependency with the project's package manager (`npm i -D playwright` on npm), then run `npx playwright install chromium`.
-- Add `.ui-review/` to `.gitignore`.
+- Create `.ui-review/` and write `.ui-review/.gitignore` containing `*` if it's missing, so screenshots stay out of git without touching the project's own `.gitignore`.
 
 ## Loop (at most 3 rounds)
 1. Make sure the dev server is running (start it in the background if needed, using the command in CLAUDE.md). Build full URLs such as `http://localhost:3000/orders`.

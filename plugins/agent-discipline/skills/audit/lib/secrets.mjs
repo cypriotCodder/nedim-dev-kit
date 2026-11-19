@@ -7,7 +7,7 @@ const PROVIDER_KEY_SOURCE = String.raw`\b(?:AKIA[0-9A-Z]{16}|sk_live_[0-9a-zA-Z]
 // The secret word can sit anywhere in the name: AWS_SECRET_ACCESS_KEY, secretKey, dbPassword. Nothing
 // before it is needed, since the match can start at the word, and `[\w-]*` there would backtrack
 // quadratically through a long run of word characters, as in minified code.
-const SECRET_NAME_SOURCE = String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key)[\w-]*`;
+const SECRET_NAME_SOURCE = String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|signing[_-]?key|credentials?)[\w-]*`;
 const QUOTE = "[\"'`]";
 
 export const PROVIDER_KEY = new RegExp(PROVIDER_KEY_SOURCE);
@@ -20,15 +20,23 @@ const DOTTED_NAME = /^[A-Za-z_$][\w$-]*(?:\.[\w$-]+)+$/; // errors.token_invalid
 const WORDS = /^[a-z]+(?:[_-](?:[a-z]+|\d{1,4}))+$|^[A-Z]+(?:_[A-Z]+)+$/; // refresh_token_cookie_name, color-neutral-600
 // Design-token references: --color-neutral-600, var(--space-4), $brand-primary, {color.neutral.600}.
 // Lowercase only, and an alias needs a dot, so a random key behind a prefix still counts.
+// SDK class names: ClientSecretCredential, AWSCredentialsProviderChain. Letters only, every capital
+// run followed by lowercase, so a random key (which has digits or lone lowercase letters) still counts.
+const CLASS_NAME = /^(?:[A-Z]{1,4}[a-z]{2,}){2,}$/;
+// Cloud resource names: projects/acme/locations/global/keyRings/main. Collections are camelCase words,
+// so a base64 secret with slashes in it still counts.
+const RESOURCE_NAME = /^[a-z]+(?:[A-Z][a-z]+)*\/[\w.-]+(?:\/[a-z]+(?:[A-Z][a-z]+)*\/[\w.-]+)*$/;
 const DESIGN_TOKEN = /^(?:--|\$)[a-z][a-z0-9-]*$|^var\(--[a-z][a-z0-9-]*\)$|^\{[\w-]+(?:\.[\w-]+)+\}$/;
 const FILE_PATH = /^(?:\.{0,2}\/|~\/|[A-Za-z]:\\)|\/[\w.-]+\.[a-z]{2,4}$/; // ./certs/key.pem, /etc/x/key.pem
-const SETTING = /^(?:\d+(?:\.\d+)?[smhdwy]?|\d+(?:ms|min|days?)|true|false|yes|no|on|off)$/i; // 15m, 8, 604800
+// Thirteen digits covers a millisecond timestamp. A longer run of digits can be a key.
+const SETTING = /^(?:\d{1,13}(?:\.\d{1,6})?[smhdwy]?|\d{1,13}(?:ms|min|days?)|true|false|yes|no|on|off)$/i; // 15m, 8, 604800
 
 // Whether a value assigned to a secret-looking name could be a credential.
 export function looksLikeSecretValue(value) {
   const v = value.trim();
   if (!v || /\s/.test(v) || PLACEHOLDER.test(v) || ENV_REFERENCE.test(v) || SETTING.test(v)) return false;
   if (DOTTED_NAME.test(v) || WORDS.test(v) || FILE_PATH.test(v) || DESIGN_TOKEN.test(v)) return false;
+  if (CLASS_NAME.test(v) || RESOURCE_NAME.test(v)) return false;
   return !/^(.)\1+$/.test(v); // aaaaaaaaaaaaaaaa
 }
 
@@ -47,7 +55,10 @@ const PROVIDER_KEY_ALL = new RegExp(PROVIDER_KEY_SOURCE, "g");
 // `\\?` because the same text can arrive JSON-escaped, for example inside a tool's JSON report.
 const ASSIGNED_SECRET_ALL = new RegExp(`(${SECRET_NAME_SOURCE}\\\\?["']?\\s*[:=]\\s*\\\\?${QUOTE})[^"'\`\\\\\\s]{8,}`, "gi");
 // Unquoted, as in an env file or a shell line: DB_PASSWORD=hunter2.
-const ENV_STYLE_ALL = /(\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*)(?![\s"'`\\[])[^\s"'`\\]{4,}/g;
+const ENV_STYLE_ALL = /(\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|SIGNING_?KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*)(?![\s"'`\\[])[^\s"'`\\]{4,}/g;
+// The same in any case (db_password=hunter2, authToken=abc), but only written tight with no call in
+// the value, so code such as `const password = req.body.password` keeps the evidence an auditor needs.
+const ENV_STYLE_ANY_CASE = /(\b[A-Za-z0-9_]*(?:secret|password|passwd|token|api_?key|private_?key|access_?key|signing_?key|credentials?)[A-Za-z0-9_]*=)(?![\s"'`\\[=])(?![^\s"'`\\]*\()[^\s"'`\\]{4,}/gi;
 const URL_PASSWORD_ALL = /(\/\/[^/\s:@"'`]+:)[^/\s@"'`]+(@)/g;
 const BEARER_ALL = /(\b(?:Bearer|Basic|token)\s+)[A-Za-z0-9\-._~+/]{16,}=*/g;
 
@@ -56,6 +67,7 @@ export const redact = (text) => text
   .replace(PROVIDER_KEY_ALL, "[redacted]")
   .replace(ASSIGNED_SECRET_ALL, "$1[redacted]")
   .replace(ENV_STYLE_ALL, "$1[redacted]")
+  .replace(ENV_STYLE_ANY_CASE, "$1[redacted]")
   .replace(URL_PASSWORD_ALL, "$1[redacted]$2")
   .replace(BEARER_ALL, "$1[redacted]");
 
@@ -65,9 +77,9 @@ export const isEnvTemplate = (path) => /\.(example|sample|template)$/.test(path)
 // Frameworks expect `.env.development` and friends to be committed, so those only count when they
 // hold a secret. `.env` and `*.local` are private by convention, whatever they hold today.
 const PRIVATE_ENV_FILE = /(^|\/)\.env(\.local|\.[^/]+\.local)?$/;
-const SECRET_KEY = /SECRET|PASSWORD|PASSWD|PWD|TOKEN|PRIVATE|CREDENTIAL|API_?KEY|ACCESS_KEY|AUTH_KEY|SERVICE_ROLE/i;
+const SECRET_KEY = /SECRET|PASSWORD|PASSWD|PWD|TOKEN|PRIVATE|CREDENTIAL|API_?KEY|ACCESS_KEY|AUTH_KEY|SIGNING_?KEY|SERVICE_ROLE/i;
 // Settings about a secret rather than the secret: ACCESS_TOKEN_EXPIRES_IN, PASSWORD_MIN_LENGTH.
-const ABOUT_A_SECRET = /_(?:EXPIRES?(?:_IN)?|EXPIRY|EXPIRATION|TTL|LIFETIME|MAX_AGE|LENGTH|MIN|MAX|MIN_LENGTH|MAX_LENGTH|ROUNDS|SALT_ROUNDS|COUNT|LIMIT|TIMEOUT|ENABLED|DISABLED|REQUIRED|HEADER|HEADER_NAME|COOKIE|COOKIE_NAME|NAME|ALGORITHM|ALG|ISSUER|AUDIENCE|URL_PATH|PATH|FILE|PREFIX)$/i;
+const ABOUT_A_SECRET = /_(?:EXPIRES?(?:_IN)?|EXPIRY|EXPIRATION|TTL|LIFETIME|MAX_AGE|LENGTH|MIN|MAX|MIN_LENGTH|MAX_LENGTH|ROUNDS|SALT_ROUNDS|COUNT|LIMIT|TIMEOUT|ENABLED|DISABLED|REQUIRED|HEADER|HEADER_NAME|COOKIE|COOKIE_NAME|NAME|ALGORITHM|ALG|ISSUER|AUDIENCE|URL_PATH|PATH|FILE|PREFIX|VERSION|SIZE|BYTES|SIZE_BYTES|AT|AT_MS|AT_NS)$/i;
 const PUBLIC_KEY = /^(?:NEXT_PUBLIC|NUXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|PUBLIC)_/;
 const CLIENT_EXPOSED_SECRET = /SECRET|PRIVATE|SERVICE_ROLE|PASSWORD/i; // the audit's client-exposed-secret rule
 const URL_PASSWORD = /\/\/[^/\s:@]+:[^/\s@]+@/;
