@@ -1409,3 +1409,90 @@ describe("collect: PR 9 (false positives a real audit hit)", () => {
     });
   }
 });
+
+describe("collect: PR 10 (collector hygiene)", () => {
+  // C: the collector's own output made a clean repo look dirty and changed.
+  describe("its own output isn't a project change", () => {
+    const head = (root) => spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const audited = () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      write(root, "docs/audits/latest.json", JSON.stringify({ commit: head(root) }));
+      gitCommitAll(root);
+      write(root, ".audit/map.md", "# map\n");
+      collect(root); // leaves .audit/raw behind, as a previous run would
+      return root;
+    };
+
+    test("a clean repo has no uncommitted files on the second run", () => {
+      assert.equal(collect(audited()).summary.metrics.git.uncommittedFiles, 0);
+    });
+
+    test("changes since the last audit leave out .audit/", () => {
+      const changed = collect(audited()).raw("changed-since-last.txt");
+      assert.doesNotMatch(changed, /\.audit\//);
+    });
+
+    test("an --out folder elsewhere in the project is left out too", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      const args = ["--offline", "--no-tests", "--out", "evidence"];
+      collect(root, args);
+      const r = collect(root, args);
+      assert.equal(r.summary.metrics.git.uncommittedFiles, 0);
+    });
+
+    test("real changes still count", () => {
+      const root = audited();
+      write(root, "src/a.ts", "export const a = 1;\n");
+      write(root, "src/b.ts", "export {};\n");
+      const r = collect(root);
+      assert.equal(r.summary.metrics.git.uncommittedFiles, 2);
+      const changed = r.raw("changed-since-last.txt").split("\n");
+      for (const f of ["src/a.ts", "src/b.ts"]) assert.ok(changed.includes(f), f);
+      assert.ok(!changed.some((f) => f.startsWith(".audit/")), changed.join(", "));
+    });
+  });
+
+  // F: any path containing "generated" was dropped from the inventory.
+  describe("generated files", () => {
+    const sourceFiles = (files) => collect(repo(files)).summary.metrics.inventory.sourceFiles;
+    for (const file of ["src/regeneratedTokens.ts", "src/generatedAt.ts", "src/useGeneratedId.ts"]) {
+      test(`${file} is source`, () => assert.equal(sourceFiles({ [file]: "export {};\n" }), 1));
+    }
+    for (const file of ["src/generated/api.ts", "src/api.generated.ts", "src/generated.ts"]) {
+      test(`${file} is generated`, () => assert.equal(sourceFiles({ [file]: "export {};\n", "src/a.ts": "export {};\n" }), 1));
+    }
+  });
+
+  // D2: secret names the scan and the redaction missed.
+  describe("more secret names", () => {
+    const VALUE = "Xk9mQ2pLw7Rt5vZb3nHc";
+    for (const line of [`const signingKey = "${VALUE}";`, `const SIGNING_KEY = "${VALUE}";`, `const credentials = "${VALUE}";`]) {
+      test(`${line} blocks the gate`, () => {
+        assert.equal(collect(repo({ "src/a.ts": `${line}\n` }), GATE).code, 1);
+      });
+    }
+    for (const [what, text] of [["a lowercase password=", `db_password=${VALUE}`], ["a mixed-case Token=", `authToken=${VALUE}`], ["a SIGNING_KEY=", `JWT_SIGNING_KEY=${VALUE}`]]) {
+      test(`removes ${what} from tool output`, () => {
+        const root = repo({ "src/a.js": "export {};\n" });
+        eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: text }] }]);
+        assert.doesNotMatch(collect(root).raw("eslint.json"), new RegExp(VALUE));
+      });
+    }
+    test("fetch's credentials option isn't a secret", () => {
+      assert.equal(collect(repo({ "src/a.ts": `fetch(u, { credentials: "same-origin" });\n` }), GATE).code, 0);
+    });
+  });
+
+  // D1: a long run of digits passed as a setting like 604800.
+  describe("long digit values", () => {
+    test("a 20-digit token blocks the gate", () => {
+      assert.equal(collect(repo({ "src/a.ts": `const token = "12345678901234567890";\n` }), GATE).code, 1);
+    });
+    test("a 20-digit password in .env.production is a leak", () => {
+      assert.equal(collect(repo({ "src/a.ts": "export {};\n", ".env.production": "DB_PASSWORD=12345678901234567890\n" }), GATE).code, 1);
+    });
+    test("a millisecond timestamp is still a setting", () => {
+      assert.equal(collect(repo({ "src/a.ts": "export {};\n", ".env.production": "SESSION_SECRET_ROTATED_AT=1700000000000\n" }), GATE).code, 0);
+    });
+  });
+});

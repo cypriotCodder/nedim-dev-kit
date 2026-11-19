@@ -7,7 +7,7 @@ const PROVIDER_KEY_SOURCE = String.raw`\b(?:AKIA[0-9A-Z]{16}|sk_live_[0-9a-zA-Z]
 // The secret word can sit anywhere in the name: AWS_SECRET_ACCESS_KEY, secretKey, dbPassword. Nothing
 // before it is needed, since the match can start at the word, and `[\w-]*` there would backtrack
 // quadratically through a long run of word characters, as in minified code.
-const SECRET_NAME_SOURCE = String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key)[\w-]*`;
+const SECRET_NAME_SOURCE = String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|signing[_-]?key|credentials?)[\w-]*`;
 const QUOTE = "[\"'`]";
 
 export const PROVIDER_KEY = new RegExp(PROVIDER_KEY_SOURCE);
@@ -22,7 +22,8 @@ const WORDS = /^[a-z]+(?:[_-](?:[a-z]+|\d{1,4}))+$|^[A-Z]+(?:_[A-Z]+)+$/; // ref
 // Lowercase only, and an alias needs a dot, so a random key behind a prefix still counts.
 const DESIGN_TOKEN = /^(?:--|\$)[a-z][a-z0-9-]*$|^var\(--[a-z][a-z0-9-]*\)$|^\{[\w-]+(?:\.[\w-]+)+\}$/;
 const FILE_PATH = /^(?:\.{0,2}\/|~\/|[A-Za-z]:\\)|\/[\w.-]+\.[a-z]{2,4}$/; // ./certs/key.pem, /etc/x/key.pem
-const SETTING = /^(?:\d+(?:\.\d+)?[smhdwy]?|\d+(?:ms|min|days?)|true|false|yes|no|on|off)$/i; // 15m, 8, 604800
+// Thirteen digits covers a millisecond timestamp. A longer run of digits can be a key.
+const SETTING = /^(?:\d{1,13}(?:\.\d+)?[smhdwy]?|\d+(?:ms|min|days?)|true|false|yes|no|on|off)$/i; // 15m, 8, 604800
 
 // Whether a value assigned to a secret-looking name could be a credential.
 export function looksLikeSecretValue(value) {
@@ -46,8 +47,8 @@ const PEM_BLOCK = new RegExp(String.raw`${PEM_MARKER_SOURCE}(?:\\[nr]|[\sA-Za-z0
 const PROVIDER_KEY_ALL = new RegExp(PROVIDER_KEY_SOURCE, "g");
 // `\\?` because the same text can arrive JSON-escaped, for example inside a tool's JSON report.
 const ASSIGNED_SECRET_ALL = new RegExp(`(${SECRET_NAME_SOURCE}\\\\?["']?\\s*[:=]\\s*\\\\?${QUOTE})[^"'\`\\\\\\s]{8,}`, "gi");
-// Unquoted, as in an env file or a shell line: DB_PASSWORD=hunter2.
-const ENV_STYLE_ALL = /(\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*)(?![\s"'`\\[])[^\s"'`\\]{4,}/g;
+// Unquoted, as in an env file or a shell line: DB_PASSWORD=hunter2, db_password=hunter2, authToken=abc.
+const ENV_STYLE_ALL = /(\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|SIGNING_?KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*)(?![\s"'`\\[])[^\s"'`\\]{4,}/gi;
 const URL_PASSWORD_ALL = /(\/\/[^/\s:@"'`]+:)[^/\s@"'`]+(@)/g;
 const BEARER_ALL = /(\b(?:Bearer|Basic|token)\s+)[A-Za-z0-9\-._~+/]{16,}=*/g;
 
@@ -65,7 +66,7 @@ export const isEnvTemplate = (path) => /\.(example|sample|template)$/.test(path)
 // Frameworks expect `.env.development` and friends to be committed, so those only count when they
 // hold a secret. `.env` and `*.local` are private by convention, whatever they hold today.
 const PRIVATE_ENV_FILE = /(^|\/)\.env(\.local|\.[^/]+\.local)?$/;
-const SECRET_KEY = /SECRET|PASSWORD|PASSWD|PWD|TOKEN|PRIVATE|CREDENTIAL|API_?KEY|ACCESS_KEY|AUTH_KEY|SERVICE_ROLE/i;
+const SECRET_KEY = /SECRET|PASSWORD|PASSWD|PWD|TOKEN|PRIVATE|CREDENTIAL|API_?KEY|ACCESS_KEY|AUTH_KEY|SIGNING_?KEY|SERVICE_ROLE/i;
 // Settings about a secret rather than the secret: ACCESS_TOKEN_EXPIRES_IN, PASSWORD_MIN_LENGTH.
 const ABOUT_A_SECRET = /_(?:EXPIRES?(?:_IN)?|EXPIRY|EXPIRATION|TTL|LIFETIME|MAX_AGE|LENGTH|MIN|MAX|MIN_LENGTH|MAX_LENGTH|ROUNDS|SALT_ROUNDS|COUNT|LIMIT|TIMEOUT|ENABLED|DISABLED|REQUIRED|HEADER|HEADER_NAME|COOKIE|COOKIE_NAME|NAME|ALGORITHM|ALG|ISSUER|AUDIENCE|URL_PATH|PATH|FILE|PREFIX)$/i;
 const PUBLIC_KEY = /^(?:NEXT_PUBLIC|NUXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|PUBLIC)_/;

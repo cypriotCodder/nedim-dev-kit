@@ -16,7 +16,7 @@ Mode and scope: $ARGUMENTS (default `full` on the repo root). An `--since-last` 
 Files used here: `${CLAUDE_PLUGIN_ROOT}/skills/audit/collect.mjs`, `score.mjs`, `rules.json`, `rubric.md` and `report-template.md` in the same folder.
 
 ## 0. Prepare
-- Add `.audit/` to `.gitignore` if it's missing. Known secret formats are redacted, but raw evidence still quotes source code, so it must never be committed.
+- Create `.audit/` and write `.audit/.gitignore` containing `*` if it's missing. That keeps the whole folder out of git without touching the project's own `.gitignore`. Known secret formats are redacted, but raw evidence still quotes source code, so it must never be committed.
 - Note the date: `D=$(date +%F)`. Reports go in `docs/audits/`.
 - Monorepo (has `workspaces`, `apps/`, `packages/`)? List the packages and audit each deployable app as its own scope. Score the apps separately and add one combined line. Give each app its own folder: `--baseline docs/audits/<app>/latest.json` for `collect.mjs`, and `--dir docs/audits/<app>` for `score.mjs`.
 - Read `CLAUDE.md`, `docs/DECISIONS.md` and any previous `docs/audits/latest.json`.
@@ -100,7 +100,7 @@ To accept a finding as a known risk, the user adds it to `risks` in `.audit-exce
 Everything comes from `.audit/score.json`:
 - `docs/audits/$D.md` from `report-template.md`: scorecard, top 5 risks, findings by category, reuse opportunities, what's working well (the strengths), coverage gaps, trend. A partial audit writes `docs/audits/$D-<mode>.md` and says what it didn't cover.
 - `docs/audits/backlog.md` (full audits only): open findings grouped into **fix batches**, leaving out accepted ones. Batch 0 holds every critical and any S-effort high (do these now). Later batches are themed, e.g. "add tenant scoping middleware" fixes SEC-003/004/007 together. Each batch lists its ids, the effort, and a "verify by" line.
-- **Don't commit anything yet.** Show the user what was written and ask. If they agree and you're on the default branch, create a branch first. Then commit `docs/audits/*` together with the `.gitignore` change from step 0 (`chore(audit): <date> health audit`). Never commit `.audit/`.
+- **Don't commit anything yet.** Show the user what was written and ask. If they agree and you're on the default branch, create a branch first. Then commit `docs/audits/*` on its own (`chore(audit): <date> health audit`). Never commit `.audit/`: its own `.gitignore` from step 0 keeps it out.
 
 ## 7. Report to the user
 In at most 10 lines: overall score with its `coverageGaps` count, since a skipped tool doesn't lower a score, the per-category scores (with deltas), how many critical/high findings there are, the top 3 risks in plain words, and the recommended first batch. Then offer `/agent-discipline:fix-findings batch-0`. If they want audits to run regularly, offer a weekly scheduled `--since-last` audit and the CI gate. To install the gate, copy `${CLAUDE_PLUGIN_ROOT}/skills/audit/collect.mjs` and the `lib/` folder beside it to `scripts/audit/` (`/agent-discipline:doctor` spots copies that fall behind the plugin or were edited, so keep `scripts/audit/` out of the project's formatters), and `${CLAUDE_PLUGIN_ROOT}/skills/audit/templates/audit-ci.yml` to `.github/workflows/audit.yml`. Change the workflow's install step and cache to the project's package manager. Make sure `.nvmrc` exists, or switch the workflow to `node-version: 22`.

@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, extname, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, extname, resolve } from "node:path";
 import { EXCEPTIONS_FILE, applyExceptions, loadExceptions } from "./lib/exceptions.mjs";
 import { IGNORED_DIRS, JS_FILE, TIMEOUT_SETTING_PROBLEM, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, inCI, readStrict, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
 import { HARDCODED_SECRET, PROVIDER_KEY, envFileLeak, isEnvTemplate, redact } from "./lib/secrets.mjs";
@@ -54,6 +54,10 @@ for (const name of OUTPUTS) rmSync(join(out, name), { force: true });
 
 const summary = { generatedAt: new Date().toISOString(), collectorVersion: KIT_VERSION, commit: null, root, tools: {}, metrics: {}, skipped: [] };
 const bin = (n) => join(root, "node_modules", ".bin", n);
+// Git pathspecs that leave out this script's own output and the audit's working folder, so a
+// previous run doesn't show up as an uncommitted change. Only folders inside the project apply.
+const outRel = relative(root, out).split("\\").join("/");
+const NOT_AUDIT_OUTPUT = [".", ":(exclude).audit", ...(outRel && !outRel.startsWith("..") && !isAbsolute(outRel) ? [`:(exclude)${outRel}`] : [])];
 const run = (cmd, args) => {
   const r = spawnSync(cmd, args, { cwd: root, encoding: "utf8", timeout: 240000, maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status, stdout: r.stdout || "" };
@@ -122,7 +126,7 @@ summary.metrics.lockfile = {
   name: pm.lockfile || OTHER_LOCKFILES.find((l) => existsSync(join(root, l))) || null,
 };
 const SRC_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".py", ".go", ".rs", ".java", ".cs", ".cpp", ".hpp", ".c", ".h"]);
-const srcFiles = files.filter((f) => SRC_EXT.has(extname(f)) && !/\.d\.ts$|\.min\.js$|generated|\.gen\./.test(f));
+const srcFiles = files.filter((f) => SRC_EXT.has(extname(f)) && !/\.d\.ts$|\.min\.js$|(^|[/.])generated[/.]|\.gen\./.test(f));
 const isTest = (f) => /(\.|_)(test|spec)\.|__tests__|(^|\/)tests?\//.test(f);
 const srcDirs = srcArg ? [srcArg] : sourceRoots(files);
 
@@ -589,7 +593,7 @@ tool("hotspots", () => {
   summary.metrics.hotspots = hot.map(([f, c, n]) => `${c} commits × ${n} lines  ${f}`);
   save("hotspots.txt", summary.metrics.hotspots.join("\n"));
   const commits = run("git", ["rev-list", "--count", "HEAD"]).stdout.trim();
-  summary.metrics.git = { commits: +commits || 0, uncommittedFiles: run("git", ["status", "--porcelain"]).stdout.split("\n").filter(Boolean).length };
+  summary.metrics.git = { commits: +commits || 0, uncommittedFiles: run("git", ["status", "--porcelain", "--", ...NOT_AUDIT_OUTPUT]).stdout.split("\n").filter(Boolean).length };
   // The auditors have no shell, so the history they judge is captured for them.
   save("git-log.txt", `${run("git", ["log", "--oneline", "-30"]).stdout}\n## Size of recent commits\n${run("git", ["log", "--shortstat", "--format=%h %s", "-15"]).stdout}`);
   return { hot: hot.length };
@@ -607,7 +611,7 @@ tool("sinceLast", () => {
   if (!/^[0-9a-f]{7,64}$/.test(base.commit)) return { status: "failed", reason: `${baselineArg} has an invalid commit` };
   if (run("git", ["cat-file", "-e", `${base.commit}^{commit}`]).code !== 0) return { status: "failed", reason: `commit ${base.commit.slice(0, 8)} isn't in this repo's history` };
   const diff = run("git", ["diff", "--name-only", "--no-renames", "-z", base.commit]);
-  const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ...NOT_AUDIT_OUTPUT]);
   if (diff.code !== 0 || untracked.code !== 0) return { status: "failed", reason: "git couldn't list the changes" };
   const changed = [...new Set([...diff.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean))].sort();
   save("changed-since-last.txt", changed.join("\n"));

@@ -206,8 +206,13 @@ describe("audit skill contract", () => {
     assert.doesNotMatch(text, /random/);
   });
 
-  test("doesn't commit without asking, and commits .gitignore with the reports (item 24)", () => {
+  test("doesn't commit without asking (item 24)", () => {
     assert.match(text, /Don't commit anything yet/);
-    assert.match(text, /together with the `\.gitignore` change/);
+  });
+
+  test("keeps .audit/ out of git with its own .gitignore, not the project's (PR 10)", () => {
+    assert.match(text, /write `\.audit\/\.gitignore` containing `\*`/);
+    assert.doesNotMatch(text, /Add `\.audit\/` to `\.gitignore`/);
+    assert.match(read(PLUGIN, "skills", "ui-review", "SKILL.md"), /write `\.ui-review\/\.gitignore` containing `\*`/);
   });
 });
