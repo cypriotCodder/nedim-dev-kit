@@ -19,4 +19,5 @@ Return ONLY a JSON array with one entry per input finding:
   "severity": "<final severity>", "confidence": "confirmed|likely|possible",
   "reason": "one sentence: what you checked and found", "fix": "<improved fix or unchanged>" }
 ```
+If the finding is real but its rule is wrong, also return `"proposedRule"`: a rule id from the same category in `rules.json`, and say why in `reason`. Don't propose a rule only because it scores better.
 Only use `confirmed` when you saw the defect yourself, in code that is reachable. If you can't decide, use `possible` and say what a human should check.

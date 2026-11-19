@@ -16,7 +16,11 @@ export const PROVIDER_KEY = new RegExp(PROVIDER_KEY_SOURCE);
 const PLACEHOLDER = /^(?:\$\{?\w+\}?|<.*>|changeme|change[-_]me|x{3,}|\*{3,}|your[-_].*|todo|none|null|undefined|true|false|redacted)$/i;
 const ENV_REFERENCE = /process\.env|import\.meta\.env|\$\{|\{\{|%\(|^env\(|^ENV\[/;
 const DOTTED_NAME = /^[A-Za-z_$][\w$-]*(?:\.[\w$-]+)+$/; // errors.token_invalid, config.auth.secret
-const WORDS = /^[a-z]+(?:[_-][a-z]+)+$|^[A-Z]+(?:_[A-Z]+)+$/; // refresh_token_cookie_name, MY_SECRET_NAME
+// Digit segments are short and never mixed with letters, so a key like key-3ax6xnjp29jd6fds4g still counts.
+const WORDS = /^[a-z]+(?:[_-](?:[a-z]+|\d{1,4}))+$|^[A-Z]+(?:_[A-Z]+)+$/; // refresh_token_cookie_name, color-neutral-600
+// Design-token references: --color-neutral-600, var(--space-4), $brand-primary, {color.neutral.600}.
+// Lowercase only, and an alias needs a dot, so a random key behind a prefix still counts.
+const DESIGN_TOKEN = /^(?:--|\$)[a-z][a-z0-9-]*$|^var\(--[a-z][a-z0-9-]*\)$|^\{[\w-]+(?:\.[\w-]+)+\}$/;
 const FILE_PATH = /^(?:\.{0,2}\/|~\/|[A-Za-z]:\\)|\/[\w.-]+\.[a-z]{2,4}$/; // ./certs/key.pem, /etc/x/key.pem
 const SETTING = /^(?:\d+(?:\.\d+)?[smhdwy]?|\d+(?:ms|min|days?)|true|false|yes|no|on|off)$/i; // 15m, 8, 604800
 
@@ -24,7 +28,7 @@ const SETTING = /^(?:\d+(?:\.\d+)?[smhdwy]?|\d+(?:ms|min|days?)|true|false|yes|n
 export function looksLikeSecretValue(value) {
   const v = value.trim();
   if (!v || /\s/.test(v) || PLACEHOLDER.test(v) || ENV_REFERENCE.test(v) || SETTING.test(v)) return false;
-  if (DOTTED_NAME.test(v) || WORDS.test(v) || FILE_PATH.test(v)) return false;
+  if (DOTTED_NAME.test(v) || WORDS.test(v) || FILE_PATH.test(v) || DESIGN_TOKEN.test(v)) return false;
   return !/^(.)\1+$/.test(v); // aaaaaaaaaaaaaaaa
 }
 

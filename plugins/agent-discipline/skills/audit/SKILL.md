@@ -69,11 +69,13 @@ Launch these agents **in one message** so they run concurrently. Give each one: 
   "effort": "S|M|L",
   "rule": "an id from rules.json for this category, or other-<category> if nothing fits" }
 ```
+A finding moved to another rule after the auditor returned it also carries `"reclassifiedFrom"` (the auditor's rule, from the same category) and `"reclassifiedReason"` (one sentence). See step 4.
 Severity guide: **critical** means it's exploitable or causes data loss now. **high** means likely user-facing failure or a security weakness with a plausible path. **medium** means a real defect or debt with limited blast radius. **low** covers hygiene.
 
 ## 4. Verify
 - Merge all arrays and dedupe by `rule + location`, and by title too for `other-*` rules, since those cover many problems (keep the richer one). A project agent's findings need a rule from `rules.json` too, so map them.
 - Launch `agent-discipline:audit-verifier` with every **critical, high and medium** finding. It tries to *disprove* each one: it checks reachability, mitigations elsewhere (middleware, validation layer, framework defaults) and whether the code is test-only. Apply its verdicts: remove dropped findings, set the final severity and confidence on the rest, and add `"verified": true`.
+- A rule can only change on a stated reason, because a different rule can lift a cap. When the verifier returns a `proposedRule`, or you judge the auditor picked the wrong one, set the new `rule` and keep the old one as `reclassifiedFrom` with a one-sentence `reclassifiedReason`. Only move within the finding's category. `score.mjs` refuses a move with no reason, keeps the finding's id, and lists every move in `reclassified`, with `liftsCap` set when the move raised the finding's ceiling. Report each one.
 - Findings that are still `possible` after verification go in the appendix and don't affect scores. An auditor's own `possible` doesn't skip this step: `score.mjs` refuses any unverified critical, high or medium. Lows aren't verified, and they only inform your anchor: they fire no caps. A finding the verifier downgrades to `possible` keeps its id, and `comparison.downgraded` lists it: report it as downgraded, never as fixed.
 
 ## 5. Score

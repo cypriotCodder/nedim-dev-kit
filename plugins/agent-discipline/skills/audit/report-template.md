@@ -15,6 +15,8 @@ Scope: <path / apps> · Commit: <short sha, plus "with N uncommitted files" if a
 
 Findings: <n> critical · <n> high · <n> medium · <n> low  ·  Accepted: <n>  ·  Fixed since last: <n>  ·  New: <n>  ·  Reopened: <n>
 
+<If `reclassified` isn't empty:> Reclassified: <ID> from `<from>` to `<to>` (<reason>)<, "lifts a cap" when `liftsCap`>; …
+
 ## Top risks
 1. **<ID> <title>** — <impact in one plain sentence>. Fix: <one line>. Effort <S/M/L>.
 2. …(up to 5)
