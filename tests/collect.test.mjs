@@ -1496,3 +1496,81 @@ describe("collect: PR 10 (collector hygiene)", () => {
     });
   });
 });
+
+describe("collect: PR 10 (what its review found)", () => {
+  describe("codegen layouts stay generated", () => {
+    const sourceFiles = (files) => collect(repo(files)).summary.metrics.inventory.sourceFiles;
+    for (const file of ["src/__generated__/Query.graphql.ts", "pkg/apis/zz_generated.deepcopy.go", "pkg/schema_generated.go",
+      "src/api-generated.ts", "src/generated-types.ts", "src/Generated/x.cs"]) {
+      test(`${file} is generated`, () => assert.equal(sourceFiles({ [file]: "export {};\n", "src/a.ts": "export {};\n" }), 1));
+    }
+  });
+
+  describe("redaction keeps code that only names a secret", () => {
+    for (const line of ["const password = req.body.password;", "const accessToken=jwt.sign(payload, key);"]) {
+      test(`keeps the right-hand side of ${line}`, () => {
+        const root = repo({ "src/a.js": "export {};\n" });
+        eslintReport(root, [{ filePath: "src/a.js", errorCount: 1, warningCount: 0, messages: [{ ruleId: "x", severity: 2, message: line }] }]);
+        assert.match(collect(root).raw("eslint.json"), /req\.body\.password|jwt\.sign/);
+      });
+    }
+  });
+
+  describe("names that only look like credentials", () => {
+    for (const line of [`credentialType: "ClientSecretCredential",`, `credentialProvider: "CognitoIdentityCredentials",`,
+      `credentials: "AWSCredentialsProviderChain",`, `signingKeyId: "projects/acme/locations/global/keyRings/main/cryptoKeys/jwt",`]) {
+      test(`${line} passes the gate`, () => {
+        assert.equal(collect(repo({ "src/a.ts": `const c = { ${line} };\n` }), GATE).code, 0);
+      });
+    }
+    test("an AWS-style secret with slashes still blocks", () => {
+      assert.equal(collect(repo({ "src/a.ts": `const secret = "${LONG_SECRET}/bPxRfiCYEXAMPLEKEY";\n` }), GATE).code, 1);
+    });
+  });
+
+  describe("numbers about a secret, not the secret", () => {
+    for (const line of ["SECRET_VERSION=20240101123045", "API_KEY_ROTATED_AT_NS=1700000000000000000", "TOKEN_BUCKET_SIZE_BYTES=10995116277760"]) {
+      test(`${line} in .env.production passes`, () => {
+        assert.equal(collect(repo({ "src/a.ts": "export {};\n", ".env.production": `${line}\n` }), GATE).code, 0);
+      });
+    }
+    test("a 20-digit value with a unit still blocks", () => {
+      assert.equal(collect(repo({ "src/a.ts": "export {};\n", ".env.production": "DB_PASSWORD=12345678901234567890ms\n" }), GATE).code, 1);
+    });
+  });
+
+  describe("the output folder", () => {
+    test("an --out name is a literal path, not a glob", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      write(root, "evil/x.ts", "export {};\n");
+      assert.equal(collect(root, ["--offline", "--no-tests", "--out", "ev*"]).summary.metrics.git.uncommittedFiles, 1);
+    });
+    test("a custom --out folder isn't scanned as source on the next run", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      const args = ["--offline", "--no-tests", "--out", "evidence"];
+      write(root, "evidence/stale.ts", "export {};\n");
+      assert.equal(collect(root, args).summary.metrics.inventory.sourceFiles, 1);
+    });
+    test("git status failing leaves uncommittedFiles unknown, not 0", () => {
+      const root = repo({ "src/a.ts": "export {};\n" });
+      const binDir = join(root, "fake-path");
+      const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      fakeBin(binDir, "git", `[ "$1" = "status" ] && exit 128; exec ${realGit} "$@"`);
+      assert.equal(collect(root, ["--offline", "--no-tests"], { binDir }).summary.metrics.git.uncommittedFiles, null);
+    });
+  });
+
+  // Found in PR 10's review, older than it: in an app inside a monorepo, `git diff` lists the whole
+  // repo with repo-root paths while ls-files lists the app with app paths.
+  test("changes since the last audit use project-relative paths in a monorepo app", { todo: "PR 12" }, () => {
+    const top = repo({ "apps/web/src/a.ts": "export {};\n", "apps/api/src/b.ts": "export {};\n" });
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: top, encoding: "utf8" }).stdout.trim();
+    const web = join(top, "apps", "web");
+    write(web, "docs/audits/latest.json", JSON.stringify({ commit: head }));
+    write(top, "apps/api/src/b.ts", "export const b = 1;\n");
+    write(web, "src/a.ts", "export const a = 1;\n");
+    gitCommitAll(top);
+    const changed = collect(web).raw("changed-since-last.txt").split("\n");
+    assert.deepEqual(changed, ["docs/audits/latest.json", "src/a.ts"]);
+  });
+});

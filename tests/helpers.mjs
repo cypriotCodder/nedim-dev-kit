@@ -108,7 +108,7 @@ export function collect(root, args = ["--offline", "--no-tests"], { binDir, env 
     env: cleanEnv({ PATH: path, ...env }),
   });
   const outAt = args.indexOf("--out");
-  const raw = join(root, outAt >= 0 ? args[outAt + 1] : join(".audit", "raw"));
+  const raw = resolve(root, outAt >= 0 ? args[outAt + 1] : join(".audit", "raw"));
   return {
     code: r.status,
     output: r.stdout + r.stderr,
