@@ -4,10 +4,13 @@
 // The PEM marker sits outside `\b`, which would need a word character right before its dashes.
 const PEM_MARKER_SOURCE = "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----";
 const PROVIDER_KEY_SOURCE = String.raw`\b(?:AKIA[0-9A-Z]{16}|sk_live_[0-9a-zA-Z]{20,}|gh[pousr]_[0-9A-Za-z]{30,}|github_pat_[0-9A-Za-z_]{22,}|sk-(?:proj|ant|svcacct)-[0-9A-Za-z_-]{20,}|xox[bap]-[0-9A-Za-z-]{20,}|AIza[0-9A-Za-z\-_]{35})|${PEM_MARKER_SOURCE}`;
-// The secret word can sit anywhere in the name: AWS_SECRET_ACCESS_KEY, secretKey, dbPassword. Nothing
-// before it is needed, since the match can start at the word, and `[\w-]*` there would backtrack
-// quadratically through a long run of word characters, as in minified code.
-const SECRET_NAME_SOURCE = String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|signing[_-]?key|credentials?)[\w-]*`;
+// A whole name with a secret word anywhere in it: AWS_SECRET_ACCESS_KEY, secretKey, dbPassword.
+// The match starts only where a name starts, and `(?=(?<name>…))\k<name>` takes the name atomically, so
+// a long run of word characters (minified code, "token" × 20000) is read once instead of once per
+// secret word in it, which was quadratic.
+const wholeName = (chars, words, start) =>
+  String.raw`${start}(?=${chars}*?(?:${words}))(?=(?<name>${chars}+))\k<name>`;
+const SECRET_NAME_SOURCE = wholeName(String.raw`[\w-]`, String.raw`api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|signing[_-]?key|credentials?`, String.raw`(?<![\w-])`);
 const QUOTE = "[\"'`]";
 
 export const PROVIDER_KEY = new RegExp(PROVIDER_KEY_SOURCE);
@@ -41,9 +44,9 @@ export function looksLikeSecretValue(value) {
 }
 
 // Quoted, 16 or more characters with no space, and passing the value check.
-const ASSIGNED = new RegExp(`${SECRET_NAME_SOURCE}["']?\\s*[:=]\\s*(${QUOTE})([^"'\`\\s]{16,})\\1`, "gi");
+const ASSIGNED = new RegExp(`${SECRET_NAME_SOURCE}["']?\\s*[:=]\\s*(?<quote>${QUOTE})(?<value>[^"'\`\\s]{16,})\\k<quote>`, "gi");
 export const HARDCODED_SECRET = {
-  test: (line) => [...line.matchAll(ASSIGNED)].some((m) => looksLikeSecretValue(m[2])),
+  test: (line) => [...line.matchAll(ASSIGNED)].some((m) => looksLikeSecretValue(m.groups.value)),
 };
 
 // ---------- Redaction ----------
@@ -55,19 +58,35 @@ const PROVIDER_KEY_ALL = new RegExp(PROVIDER_KEY_SOURCE, "g");
 // `\\?` because the same text can arrive JSON-escaped, for example inside a tool's JSON report.
 const ASSIGNED_SECRET_ALL = new RegExp(`(${SECRET_NAME_SOURCE}\\\\?["']?\\s*[:=]\\s*\\\\?${QUOTE})[^"'\`\\\\\\s]{8,}`, "gi");
 // Unquoted, as in an env file or a shell line: DB_PASSWORD=hunter2.
-const ENV_STYLE_ALL = /(\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|SIGNING_?KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*)(?![\s"'`\\[])[^\s"'`\\]{4,}/g;
+const ENV_STYLE_ALL = new RegExp(String.raw`(${wholeName("[A-Z0-9_]", "SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|SIGNING_?KEY|CREDENTIALS?", String.raw`\b`)}\s*=\s*)(?![\s"'${"`"}\\[])[^\s"'${"`"}\\]{4,}`, "g");
 // The same in any case (db_password=hunter2, authToken=abc), but only written tight with no call in
 // the value, so code such as `const password = req.body.password` keeps the evidence an auditor needs.
-const ENV_STYLE_ANY_CASE = /(\b[A-Za-z0-9_]*(?:secret|password|passwd|token|api_?key|private_?key|access_?key|signing_?key|credentials?)[A-Za-z0-9_]*=)(?![\s"'`\\[=])(?![^\s"'`\\]*\()[^\s"'`\\]{4,}/gi;
+// The value is taken whole, and the "no call" rule is applied in redactTight(), not in the pattern:
+// a lookahead for "(" rescanned the value once per name in it, which was quadratic in minified code.
+const TIGHT_ASSIGNMENT = new RegExp(String.raw`(${wholeName(String.raw`\w`, "secret|password|passwd|token|api_?key|private_?key|access_?key|signing_?key|credentials?", String.raw`\b`)}=)(?![\s"'${"`"}\\[=])(?=(?<value>[^\s"'${"`"}\\]*))\k<value>`, "gi");
+function redactTight(text) {
+  const re = new RegExp(TIGHT_ASSIGNMENT);
+  let out = "", kept = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const { value } = m.groups, valueAt = m.index + m[1].length, call = value.lastIndexOf("(");
+    if (call < 0 && value.length >= 4) {
+      out += text.slice(kept, valueAt) + "[redacted]";
+      kept = re.lastIndex;
+    } else {
+      // Not redacted here. A name further on can still be, but only one after the value's last "(".
+      re.lastIndex = valueAt + call + 1;
+    }
+  }
+  return out + text.slice(kept);
+}
 const URL_PASSWORD_ALL = /(\/\/[^/\s:@"'`]+:)[^/\s@"'`]+(@)/g;
 const BEARER_ALL = /(\b(?:Bearer|Basic|token)\s+)[A-Za-z0-9\-._~+/]{16,}=*/g;
 
-export const redact = (text) => text
+export const redact = (text) => redactTight(text
   .replace(PEM_BLOCK, "[redacted]")
   .replace(PROVIDER_KEY_ALL, "[redacted]")
   .replace(ASSIGNED_SECRET_ALL, "$1[redacted]")
-  .replace(ENV_STYLE_ALL, "$1[redacted]")
-  .replace(ENV_STYLE_ANY_CASE, "$1[redacted]")
+  .replace(ENV_STYLE_ALL, "$1[redacted]"))
   .replace(URL_PASSWORD_ALL, "$1[redacted]$2")
   .replace(BEARER_ALL, "$1[redacted]");
 
