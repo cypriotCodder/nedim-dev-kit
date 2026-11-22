@@ -4,6 +4,13 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-018: The trend only calls a finding fixed when a fix was recorded  (2026-11-22, status: accepted)
+
+**Context:** A real audit (Municipal-Super-App, 2026-11-08) showed findings as fixed that nobody had fixed. `compare()` put every open finding a full or since-last audit didn't find again into `fixed`, next to the ones fix-findings had marked fixed with a test. A finding can drop out because the code moved, because an auditor didn't look as closely, or because fix-findings marked it `stale`. A finding that went from the appendix to counted was also listed as `new`, though it was already known.
+**Decision:** `comparison.fixed` lists only findings marked `fixed` in the baseline. Open findings a full or since-last audit didn't find again go in a new `comparison.gone`, and in `notRechecked` for the other modes, as before. Counted findings that were in the previous appendix go in a new `comparison.promoted`, not in `new`. An appendix finding that never counted has no id, so it's matched by rule and file (and its `reclassifiedFrom` rule), the same way ids are. Each one promotes at most one finding, and none while it is still in the appendix. score.mjs prints the gone and promoted ids, and the report template, the audit skill and fix-findings use these words.
+**Alternatives:** Keep calling absent findings fixed and footnote it (the headline number stays wrong). Give appendix findings ids so they can be matched (an unconfirmed problem would use up a number, which score.mjs deliberately avoids).
+**Consequences:** Plugin 1.7.0, because `fixed` in `score.json` now means less than before. `rules.json` is unchanged, so the rubric stays at 2 and earlier baselines still compare. `collect.mjs` and `lib/` only changed their version stamp, but doctor reports a CI gate copy with an older stamp as outdated, so it should be copied again.
+
 ## ADR-017: The audit's working folders ignore themselves, and the collector leaves its output out of git counts  (2026-11-19, status: accepted)
 
 **Context:** A real audit (Municipal-Super-App, 2026-11-08) ran in a project whose `.gitignore` didn't list `.audit/`. The collector's own evidence then showed up as uncommitted files and as changes since the last audit. Step 0 of the skill fixed `.gitignore` by editing it, which put an unrelated change into the project and into the audit commit.

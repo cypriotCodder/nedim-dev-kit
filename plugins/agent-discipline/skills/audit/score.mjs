@@ -340,10 +340,23 @@ function compare() {
   const before = previous.findings || [];
   const wasOpen = (f) => f.status !== "fixed" && f.status !== "gone";
   const wasCounted = (f) => f && f.status !== "possible";
+  // Not found again isn't the same as fixed: the problem may have moved, or nobody looked closely.
   const absent = before.filter((f) => wasOpen(f) && !present.has(f.id)).map((f) => f.id);
   // fix-findings marks these with a test to prove it, so they're fixed whatever this run looked at.
   const markedFixed = before.filter((f) => f.status === "fixed" && !present.has(f.id)).map((f) => f.id);
   const rechecked = isFull || mode === "since-last"; // the other modes didn't look at everything
+  // An appendix finding that never counted has no id to match by, so it's recognised by what it is.
+  // Each one stands for one problem: it promotes at most one finding, and none while it's still there.
+  const unnumbered = new Map();
+  for (const f of previous.appendix || []) if (!f.id) unnumbered.set(identity(f), (unnumbered.get(identity(f)) || 0) + 1);
+  const take = (f) => [f, ...(f.reclassifiedFrom ? [{ ...f, rule: f.reclassifiedFrom }] : [])].some((g) => {
+    const n = unnumbered.get(identity(g));
+    if (n) unnumbered.set(identity(g), n - 1);
+    return n > 0;
+  });
+  for (const f of appendix) if (!f.previous) take(f);
+  const promoted = new Set(results.filter((f) => f.previous ? f.previous.status === "possible" : take(f)));
+  const wasPossible = (f) => promoted.has(f);
   const deltas = {};
   for (const c of scored) {
     const old = previous.scores?.[c]?.score;
@@ -352,11 +365,13 @@ function compare() {
   return {
     previousDate: previous.date, comparable: true, deltas,
     overallDelta: overall != null && typeof previous.overall === "number" ? +(overall - previous.overall).toFixed(1) : null,
-    new: results.filter((f) => !wasCounted(f.previous)).map((f) => f.id),
+    new: results.filter((f) => !wasCounted(f.previous) && !wasPossible(f)).map((f) => f.id),
+    promoted: results.filter((f) => !wasCounted(f.previous) && wasPossible(f)).map((f) => f.id),
     stillOpen: results.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
     reopened: results.filter((f) => wasCounted(f.previous) && !wasOpen(f.previous)).map((f) => f.id),
     downgraded: appendix.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
-    fixed: [...markedFixed, ...(rechecked ? absent : [])],
+    fixed: markedFixed,
+    gone: rechecked ? absent : [],
     notRechecked: rechecked ? [] : absent,
   };
 }
@@ -431,6 +446,8 @@ console.log(isFull
   : `Partial audit: no overall score${gapCount && `, ${gapCount}`}.`);
 if (gaps.length) console.log(`Coverage gaps: ${gaps.join("; ")}`);
 console.log(`Findings: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}; ${results.length - live.length} accepted; ${appendix.length} in the appendix`);
+if (output.comparison.gone?.length) console.log(`Gone since last, without a fix recorded: ${output.comparison.gone.join(", ")}`);
+if (output.comparison.promoted?.length) console.log(`Promoted from the appendix, so counted now but not new: ${output.comparison.promoted.join(", ")}`);
 if (output.comparison.downgraded?.length) console.log(`Downgraded to possible, so in the appendix and not fixed: ${output.comparison.downgraded.join(", ")}`);
 for (const r of reclassified) console.log(`Moved ${r.id ?? "(appendix)"} from ${r.from} to ${r.to}${r.liftsCap ? ", which lifts a cap" : ""}: ${r.reason}`);
 if (applicable.length !== CATEGORIES.length) console.log(`Not applicable: ${CATEGORIES.filter((c) => !applicable.includes(c)).join(", ")}`);

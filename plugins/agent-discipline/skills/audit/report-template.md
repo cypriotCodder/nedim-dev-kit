@@ -13,7 +13,8 @@ Scope: <path / apps> · Commit: <short sha, plus "with N uncommitted files" if a
 <!-- A category with status not-applicable or not-assessed shows that word instead of a score. -->
 | **Overall** | **x.x (<grade>)**, <`coverageGaps`> coverage gaps | | |
 
-Findings: <n> critical · <n> high · <n> medium · <n> low  ·  Accepted: <n>  ·  Fixed since last: <n>  ·  New: <n>  ·  Reopened: <n>
+Findings: <n> critical · <n> high · <n> medium · <n> low  ·  Accepted: <n>  ·  Fixed since last: <n>  ·  Gone: <n>  ·  New: <n>  ·  Promoted: <n>  ·  Reopened: <n>
+<!-- Fixed is `comparison.fixed` only: findings fix-findings marked fixed with a test. Gone is `comparison.gone`: not found again, with no fix recorded, so never count it as fixed. Promoted is `comparison.promoted`: in the appendix last time, counted now, so it isn't new. -->
 
 <If `reclassified` isn't empty:> Reclassified: <ID> from `<from>` to `<to>` (<reason>)<, "lifts a cap" when `liftsCap`>; …
 
