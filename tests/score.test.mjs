@@ -540,14 +540,105 @@ describe("score: finding ids and the trend", () => {
     assert.equal(again[0].id, first.find((x) => x.title === "Second problem").id);
   });
 
-  test("reports new, still open and fixed", () => {
+  test("reports new, still open and gone", () => {
     const root = project();
     score(root, { input: { findings: [finding({ location: "src/old.ts:1" }), finding({ location: "src/stay.ts:1" })] } });
     const { comparison: c } = score(root, { input: { findings: [finding({ location: "src/stay.ts:1" }), finding({ location: "src/new.ts:1" })] } }).score;
     assert.equal(c.comparable, true);
-    assert.deepEqual(c.fixed, ["SEC-001"]);
+    assert.deepEqual(c.gone, ["SEC-001"]);
+    assert.deepEqual(c.fixed, []);
     assert.deepEqual(c.stillOpen, ["SEC-002"]);
     assert.deepEqual(c.new, ["SEC-003"]);
+  });
+
+  describe("a finding that is only absent isn't called fixed", () => {
+    // Only fix-findings proves a fix, with a test. Not seeing a problem again may mean nobody looked.
+    test("a full audit reports it as gone", () => {
+      const root = project();
+      score(root, { input: { findings: [finding()] } });
+      const { comparison: c } = score(root).score;
+      assert.deepEqual(c.gone, ["SEC-001"]);
+      assert.deepEqual(c.fixed, []);
+    });
+
+    test("since-last re-checks everything, so it reports it as gone too", () => {
+      const root = project();
+      score(root, { input: { findings: [finding()] } });
+      const { comparison: c } = score(root, { input: { mode: "since-last", anchors: { security: { score: 8 } }, findings: [] } }).score;
+      assert.deepEqual(c.gone, ["SEC-001"]);
+      assert.deepEqual(c.fixed, []);
+    });
+
+    test("a partial audit reports it as not re-checked, not as gone", () => {
+      const root = project();
+      score(root, { input: { findings: [finding()] } });
+      const { comparison: c } = score(root, { input: { mode: "security", anchors: { security: { score: 8 } } } }).score;
+      assert.deepEqual(c.gone, []);
+      assert.deepEqual(c.notRechecked, ["SEC-001"]);
+    });
+
+    test("the run lists the gone ones", () => {
+      const root = project();
+      score(root, { input: { findings: [finding()] } });
+      const r = score(root);
+      assert.match(r.output, /Gone since last, without a fix recorded: SEC-001/);
+    });
+  });
+
+  describe("a finding from the appendix that counts now", () => {
+    const run = (root, confidence) => score(root, { input: { findings: [finding({ confidence })] } }).score;
+
+    test("is promoted with its id, not new", () => {
+      const root = project();
+      const first = run(root, "possible");
+      assert.equal(first.appendix[0].id, undefined); // an unconfirmed problem doesn't use up a number
+      const { comparison: c, findings } = run(root, "confirmed");
+      assert.deepEqual(c.promoted, [findings[0].id]);
+      assert.deepEqual(c.new, []);
+      assert.deepEqual(c.stillOpen, []);
+    });
+
+    test("is promoted when it moved to another rule", () => {
+      const root = project();
+      run(root, "possible");
+      const { comparison: c, findings } = score(root, { input: { findings: [finding({ rule: "sql-injection", reclassifiedFrom: "xss", reclassifiedReason: "it's a query" })] } }).score;
+      assert.deepEqual(c.promoted, [findings[0].id]);
+      assert.deepEqual(c.new, []);
+    });
+
+    test("is promoted in a since-last audit too, and the run says so", () => {
+      const root = project();
+      run(root, "possible");
+      const r = score(root, { input: { mode: "since-last", anchors: { security: { score: 8 } }, findings: [finding()] } });
+      assert.deepEqual(r.score.comparison.promoted, [r.score.findings[0].id]);
+      assert.match(r.output, new RegExp(`Promoted from the appendix, so counted now but not new: ${r.score.findings[0].id}`));
+    });
+
+    test("one appendix finding promotes one counted finding, not every one in its file", () => {
+      const root = project();
+      run(root, "possible");
+      const { comparison: c } = score(root, { input: { findings: [finding(), finding({ location: "src/a.ts:50", title: "Another" })] } }).score;
+      assert.equal(c.promoted.length, 1, JSON.stringify(c));
+      assert.equal(c.new.length, 1, JSON.stringify(c));
+    });
+
+    test("an appendix finding that is still in the appendix promotes nothing", () => {
+      const root = project();
+      run(root, "possible");
+      const { comparison: c, findings } = score(root, { input: { findings: [finding({ confidence: "possible" }), finding({ location: "src/a.ts:50" })] } }).score;
+      assert.deepEqual(c.promoted, []);
+      assert.deepEqual(c.new, [findings[0].id]);
+    });
+
+    test("that once counted and was downgraded is promoted with its old id", () => {
+      const root = project();
+      run(root, "confirmed");
+      run(root, "possible");
+      const { comparison: c, findings } = run(root, "confirmed");
+      assert.equal(findings[0].id, "SEC-001");
+      assert.deepEqual(c.promoted, ["SEC-001"]);
+      assert.deepEqual(c.new, []);
+    });
   });
 
   test("a partial audit doesn't call what it skipped fixed", () => {
@@ -582,11 +673,12 @@ describe("score: finding ids and the trend", () => {
       { id: "TOOL-002", rule: "docker-hygiene", location: "Dockerfile:1", status: "open" },
     ] }));
 
-    test("a full audit reports them as fixed", () => {
+    test("a full audit reports them as fixed, and the unmarked ones as gone", () => {
       const root = project();
       baseline(root);
       const { comparison: c } = score(root).score;
-      assert.deepEqual([...c.fixed].sort(), ["SEC-007", "TOOL-002"]);
+      assert.deepEqual(c.fixed, ["SEC-007"]);
+      assert.deepEqual(c.gone, ["TOOL-002"]);
       assert.deepEqual(c.reopened, []);
     });
 
@@ -698,6 +790,7 @@ describe("score: finding ids and the trend", () => {
     assert.equal(r.comparison.comparable, false);
     assert.match(r.comparison.reason, /rubric 1/);
     assert.equal(r.comparison.fixed, undefined);
+    assert.equal(r.comparison.gone, undefined);
     assert.equal(r.findings[0].id, "SEC-004");
   });
 });
