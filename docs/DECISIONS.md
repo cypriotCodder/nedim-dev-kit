@@ -4,6 +4,13 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-017: The audit's working folders ignore themselves, and the collector leaves its output out of git counts  (2026-11-19, status: accepted)
+
+**Context:** A real audit (Municipal-Super-App, 2026-11-08) ran in a project whose `.gitignore` didn't list `.audit/`. The collector's own evidence then showed up as uncommitted files and as changes since the last audit. Step 0 of the skill fixed `.gitignore` by editing it, which put an unrelated change into the project and into the audit commit.
+**Decision:** Step 0 writes `.audit/.gitignore` containing `*`, and ui-review does the same for `.ui-review/`. The project's `.gitignore` is never edited. Independently, `collect.mjs` passes git a pathspec that excludes `.audit` and its `--out` folder (when that is inside the project) for `uncommittedFiles` and `changed-since-last.txt`, so the result is right even before step 0 has run, as in the CI gate. The pathspecs are literal, so an `--out` name with `*` in it can't hide other folders. A custom `--out` folder is also left out of the file scan, as `.audit` already is, and `uncommittedFiles` is `null` when `git status` fails rather than 0.
+**Alternatives:** Keep editing `.gitignore` but move it to the commit step (still a project change the user didn't ask for). Only fix the collector (raw evidence could still be committed by hand).
+**Consequences:** Plugin 1.6.1. Projects that already list `.audit/` in `.gitignore` keep working. The CI gate copy should be refreshed to pick up the collector change and the secret-scan changes in the same release.
+
 ## ADR-016: A finding moved to another rule keeps its id, and the move is recorded  (2026-11-16, status: accepted)
 
 **Context:** A real audit (Municipal-Super-App, 2026-11-08) moved a finding from `non-transactional-writes` (cap 5) to `other-reliability` (no cap) on its own judgment. That raised the reliability score, and nothing in `score.json` said so. Because ids are matched by rule and file, the next audit would also have shown the finding as fixed under one id and new under another.
