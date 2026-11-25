@@ -4,6 +4,13 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-021: Reopened only means a recorded fix didn't hold  (2026-11-25, status: accepted)
+
+**Context:** Left open in PR 11's review. `compare()` put every counted finding whose previous entry wasn't open into `reopened`. When a full audit writes `closed`, every status but `fixed` becomes `gone`. So a finding that dropped out with no fix recorded, then came back, was reported as a fix that didn't hold. A test even asserted this, under the name "a fixed problem that returns". This is the same mislabel ADR-018 removed from `fixed`: the trend claimed work that nobody did.
+**Decision:** `comparison.reopened` lists only findings whose previous entry was `fixed`. A new `comparison.returned` lists findings whose previous entry was `gone`. The two split the old set exactly. score.mjs prints the returned ids, and the audit skill and report template use both words.
+**Alternatives:** Putting returned findings in `stillOpen` (they weren't in the previous audit, so the trend would hide that they went missing). Putting them in `new` (they keep their old id and history).
+**Consequences:** Plugin 1.8.0, because `reopened` in `score.json` now means less than before. `rules.json` is unchanged, so the rubric stays at 2 and earlier baselines still compare. A finding that was only ever in the appendix and then dropped out is closed as `gone`, so if it comes back counted it shows as returned rather than promoted. `closed` doesn't record whether a finding counted. `collect.mjs` and `lib/` only changed their version stamp, but doctor reports an older stamp as outdated, so CI gate copies should be copied again.
+
 ## ADR-020: Pattern rules that a regex would scan in quadratic time are matched in code  (2026-11-25, status: accepted)
 
 **Context:** Found in PR 12's review. Four pattern rules (`insecure-random-token`, `await-in-loop`, `path-traversal-risk`, `client-exposed-secret`) have the shape `head .* tail` or `head [^x]* tail`. On a minified line that repeats the head without the tail, the engine restarts at each head and rescans to the end. Each line took 1–2 seconds at 12,000 repeats. Timing every rule found two more with the same shape: `empty-catch` and `swallowed-error-log-only`, at 0.5 s each for a line of `catch(`. JavaScript has no atomic groups or possessive quantifiers, so no rewrite of these regexes avoids the restarts.

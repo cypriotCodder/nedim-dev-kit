@@ -649,14 +649,28 @@ describe("score: finding ids and the trend", () => {
     assert.deepEqual(c.notRechecked, ["TOOL-001"]);
   });
 
-  test("a fixed problem that returns is reopened with its old id", () => {
+  // Reopened says a recorded fix didn't hold. A finding that was only gone had no fix to undo.
+  test("a gone problem that comes back is returned with its old id, not reopened", () => {
     const root = project();
     score(root, { input: { findings: [finding()] } });
-    score(root); // gone
-    const { findings, comparison: c } = score(root, { input: { findings: [finding()] } }).score;
+    score(root); // gone, with no fix recorded
+    const r = score(root, { input: { findings: [finding()] } });
+    const { findings, comparison: c } = r.score;
     assert.equal(findings[0].id, "SEC-001");
-    assert.deepEqual(c.reopened, ["SEC-001"]);
+    assert.deepEqual(c.returned, ["SEC-001"]);
+    assert.deepEqual(c.reopened, []);
     assert.deepEqual(c.new, []);
+    assert.match(r.output, /Back after it was gone, with no fix recorded before: SEC-001/);
+  });
+
+  test("a fixed problem that comes back after it was closed is reopened", () => {
+    const root = project();
+    write(root, "docs/audits/latest.json", JSON.stringify({ rubricVersion: 2, date: "2026-10-01", findings: [{ id: "SEC-007", rule: "xss", location: "src/a.ts:1", status: "fixed" }] }));
+    score(root); // the fixed finding moves to `closed`, still fixed
+    const { findings, comparison: c } = score(root, { input: { findings: [finding()] } }).score;
+    assert.equal(findings[0].id, "SEC-007");
+    assert.deepEqual(c.reopened, ["SEC-007"]);
+    assert.deepEqual(c.returned, []);
   });
 
   test("a finding fix-findings marked fixed that returns is reopened", () => {

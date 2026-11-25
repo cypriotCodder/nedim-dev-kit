@@ -368,7 +368,9 @@ function compare() {
     new: results.filter((f) => !wasCounted(f.previous) && !wasPossible(f)).map((f) => f.id),
     promoted: results.filter((f) => !wasCounted(f.previous) && wasPossible(f)).map((f) => f.id),
     stillOpen: results.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
-    reopened: results.filter((f) => wasCounted(f.previous) && !wasOpen(f.previous)).map((f) => f.id),
+    // Reopened means a recorded fix didn't hold. Back from gone, there was no fix to undo.
+    reopened: results.filter((f) => f.previous?.status === "fixed").map((f) => f.id),
+    returned: results.filter((f) => f.previous?.status === "gone").map((f) => f.id),
     downgraded: appendix.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
     fixed: markedFixed,
     gone: rechecked ? absent : [],
@@ -447,6 +449,7 @@ console.log(isFull
 if (gaps.length) console.log(`Coverage gaps: ${gaps.join("; ")}`);
 console.log(`Findings: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}; ${results.length - live.length} accepted; ${appendix.length} in the appendix`);
 if (output.comparison.gone?.length) console.log(`Gone since last, without a fix recorded: ${output.comparison.gone.join(", ")}`);
+if (output.comparison.returned?.length) console.log(`Back after it was gone, with no fix recorded before: ${output.comparison.returned.join(", ")}`);
 if (output.comparison.promoted?.length) console.log(`Promoted from the appendix, so counted now but not new: ${output.comparison.promoted.join(", ")}`);
 if (output.comparison.downgraded?.length) console.log(`Downgraded to possible, so in the appendix and not fixed: ${output.comparison.downgraded.join(", ")}`);
 for (const r of reclassified) console.log(`Moved ${r.id ?? "(appendix)"} from ${r.from} to ${r.to}${r.liftsCap ? ", which lifts a cap" : ""}: ${r.reason}`);

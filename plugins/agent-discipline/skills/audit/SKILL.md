@@ -94,7 +94,7 @@ It applies the caps and weights, assigns stable finding ids (`SEC-001`, and so o
 
 If `comparison.comparable` is false because the rubric changed, say scores aren't comparable with the last audit, and don't present a trend.
 
-In the trend, only `comparison.fixed` is fixed: those were marked fixed by fix-findings, with a test. `comparison.gone` lists findings this audit didn't find again and nobody recorded a fix for. Report them as gone, never as fixed. `comparison.promoted` lists appendix findings that count now: report them as promoted, not new.
+In the trend, only `comparison.fixed` is fixed: those were marked fixed by fix-findings, with a test. `comparison.gone` lists findings this audit didn't find again and nobody recorded a fix for. Report them as gone, never as fixed. `comparison.promoted` lists appendix findings that count now: report them as promoted, not new. `comparison.reopened` lists findings that came back after a recorded fix, and `comparison.returned` lists ones that came back after they were gone. Report only the first as reopened, since a gone finding had no fix to undo.
 
 To accept a finding as a known risk, the user adds it to `risks` in `.audit-exceptions.json`, with a reason and an expiry date. Accepted findings stay in the report and stop counting toward scores until they expire. A finding with several locations is only accepted if the risks cover all of them. Each location has to be a file that exists in the project, on its own or in a comma-separated list, so a note after the path or a file that's been deleted stays open. A critical can't be accepted. Never add an entry yourself.
 
