@@ -20,6 +20,7 @@ import { dirname, isAbsolute, join, relative, extname, resolve } from "node:path
 import { EXCEPTIONS_FILE, applyExceptions, loadExceptions } from "./lib/exceptions.mjs";
 import { IGNORED_DIRS, JS_FILE, TIMEOUT_SETTING_PROBLEM, TS_FILE, countTypeErrors, detectPackageManager, findBoundaryConfig, inCI, readStrict, runBoundaryCheck, runTool, runTypecheck, scanProject, sourceRoots, testCommand } from "./lib/project.mjs";
 import { HARDCODED_SECRET, PROVIDER_KEY, envFileLeak, isEnvTemplate, redact } from "./lib/secrets.mjs";
+import { CLIENT_EXPOSED_SECRET, EMPTY_CATCH, INSECURE_RANDOM_TOKEN, PATH_TRAVERSAL_RISK, SWALLOWED_ERROR_LOG_ONLY, countAwaitInLoop } from "./lib/patterns.mjs";
 import { KIT_VERSION } from "./lib/version.mjs";
 
 const argv = process.argv.slice(2);
@@ -428,6 +429,7 @@ tool("gitleaks", () => {
 });
 
 // ---------- Built-in pattern scan (no deps; always runs) ----------
+// Rules whose plain regex is quadratic on long lines are matchers from lib/patterns.mjs; see there.
 const PATTERNS = [
   // security
   ["security", "hardcoded-secret", HARDCODED_SECRET],
@@ -439,21 +441,21 @@ const PATTERNS = [
   ["security", "tls-disabled", /rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED/],
   ["security", "cors-wildcard", /origin\s*:\s*(?:["']\*["']|true)\b|Access-Control-Allow-Origin["']?\s*[,:]\s*["']\*/],
   ["security", "weak-hash", /createHash\(\s*["'](?:md5|sha1)["']/],
-  ["security", "insecure-random-token", /Math\.random\(\).*(?:token|secret|code|otp|password|id)|(?:token|secret|otp|code)\s*=.*Math\.random\(\)/i],
+  ["security", "insecure-random-token", INSECURE_RANDOM_TOKEN],
   ["security", "jwt-decode-without-verify", /jwt\.decode\s*\(/],
   ["security", "jwt-none-or-weak", /algorithms?\s*:\s*\[?\s*["']none["']/i],
-  ["security", "client-exposed-secret", /(?:NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP)_[A-Z_]*(?:SECRET|PRIVATE|SERVICE_ROLE|PASSWORD)/],
-  ["security", "path-traversal-risk", /(?:readFile|createReadStream|sendFile|res\.download)\s*\([^)]*req\.(?:params|query|body)/],
+  ["security", "client-exposed-secret", CLIENT_EXPOSED_SECRET],
+  ["security", "path-traversal-risk", PATH_TRAVERSAL_RISK],
   // reliability
-  ["reliability", "empty-catch", /catch\s*(?:\([^)]*\))?\s*\{\s*\}/],
-  ["reliability", "swallowed-error-log-only", /catch\s*\([^)]*\)\s*\{\s*console\.(?:log|error)\([^)]*\);?\s*\}/],
+  ["reliability", "empty-catch", EMPTY_CATCH],
+  ["reliability", "swallowed-error-log-only", SWALLOWED_ERROR_LOG_ONLY],
   ["reliability", "floating-promise-forEach", /\.forEach\(\s*async\b/],
   ["reliability", "fetch-call", /\bfetch\s*\(/],
   ["reliability", "abort-or-timeout", /AbortSignal\.timeout|AbortController|timeout\s*:/],
   ["reliability", "process-exit", /process\.exit\(/],
   ["reliability", "json-parse", /JSON\.parse\(/],
   // performance
-  ["performance", "await-in-loop", /for\s*\([^)]*\)\s*\{[^}]*\bawait\b|for\s+(?:const|let)\s+\w+\s+of[^{]*\{[^}]*\bawait\b/],
+  ["performance", "await-in-loop", { count: countAwaitInLoop }], // counted over the whole file
   ["performance", "select-star", /SELECT\s+\*\s+FROM/i],
   ["performance", "sync-fs-in-server", /\b(?:readFileSync|writeFileSync|existsSync)\s*\(/],
   ["performance", "unbounded-findMany", /\.(?:findMany|find)\(\s*\)/],
@@ -554,10 +556,10 @@ tool("patterns", () => {
       if (!isSource && !isSecretRule) continue;
       if (id === "hardcoded-secret" && !isSource && PROSE_OR_TEMPLATE.test(f)) continue;
       if (testFile && cat !== "security") continue;
-      // multi-line patterns (await-in-loop) scan windows; others line by line
-      if (id === "await-in-loop") {
-        const m = text.match(new RegExp(re.source, "g")); if (!m) continue;
-        hits[id] = (hits[id] || 0) + m.length; (examples[id] ||= []).length < 12 && examples[id].push(`${f}`);
+      // whole-file rules (await-in-loop) count matches across lines; others go line by line
+      if (re.count) {
+        const n = re.count(text); if (!n) continue;
+        hits[id] = (hits[id] || 0) + n; (examples[id] ||= []).length < 12 && examples[id].push(`${f}`);
         continue;
       }
       lines.forEach((l, i) => {

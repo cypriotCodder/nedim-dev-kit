@@ -1609,12 +1609,46 @@ describe("collect: secret names in a long run of word characters", () => {
     assert.match(evidence, /console\.log\(MY_API_TOKEN=\[redacted\]/);
   });
 
-  // Found in PR 12's review: four pattern rules have the same `start .* end` shape, so a line that
-  // repeats the start without the end is rescanned from each repeat. Each line alone takes 1–6 s.
-  test("pattern rules scan a long minified line in linear time", { todo: "PR 13" }, () => {
-    const lines = ["Math.random()", "for (const x of y{", "readFile(", "NEXT_PUBLIC_A"].map((s) => `export const a = "${s.repeat(12000)}";`);
+  // Found in PR 12's review: six pattern rules have the same `start .* end` shape, so a line that
+  // repeats the start without the end is rescanned from each repeat. Each line alone took 0.5–2 s.
+  test("pattern rules scan a long minified line in linear time", () => {
+    const seeds = ["Math.random()", "for (const x of y{", "readFile(", "NEXT_PUBLIC_A", "catch(", "\rtoken ="];
+    const lines = seeds.map((s) => `export const a = "${s.repeat(12000)}";`);
     const t0 = Date.now();
     collect(repo({ "src/a.ts": `${lines.join("\n")}\n` }));
     assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+  });
+
+  // The rules above are matched in code rather than by one regex, so pin down what they still find.
+  test("the rewritten pattern rules flag what their regex did, and nothing more", () => {
+    const flagged = {
+      // \s in the head may cross a lone \r, but `.*` can't (see the clean line below)
+      "insecure-random-token": ["const token = Math.random().toString(36);", "const x = Math.random(); const sessionId = x;", "const token\r= Math.random();"],
+      "client-exposed-secret": ["const k = process.env.NEXT_PUBLIC_STRIPE_SECRET;", "VITE_DB_PASSWORD", "XREACT_APP_SERVICE_ROLE_KEY"],
+      "path-traversal-risk": ["fs.readFile(join(dir, req.params.name), cb);", "res.download(base + req.query.f);"],
+      "empty-catch": ["try { a(); } catch (e) {}", "try { a(); } catch {  }"],
+      "swallowed-error-log-only": ["} catch (e) { console.error(e); }"],
+    };
+    const clean = [
+      "const n = Math.random() * 10;", // no secret word after it
+      "const secret =\rMath.random();", // `.*` would have to cross the \r
+      "const k = process.env.NEXT_PUBLIC_SITE_URL;", "const k = NEXT_PUBLIC_A + SECRET;", // the word must be in the same name
+      "fs.readFile(path); use(req.params.x);", // req is outside the call's parentheses
+      "} catch (e) { log(e); }", "} catch (e) { console.warn(e); }",
+    ];
+    const loops = [
+      "for (const x of xs) {\n  await save(x);\n}",
+      "for (let i = 0; i < n; i++) { await step(i); }",
+      "for (const x of xs) { save(x); }\nawait done();", // await after the body: not in the loop
+    ];
+    const lines = [...Object.values(flagged).flat(), ...clean];
+    const r = collect(repo({ "src/a.ts": `${lines.join("\n")}\n`, "src/loops.ts": `${loops.join("\n")}\n` }));
+    const p = r.summary.metrics.patterns;
+    assert.equal(p.security["insecure-random-token"], 3);
+    assert.equal(p.security["client-exposed-secret"], 3);
+    assert.equal(p.security["path-traversal-risk"], 2);
+    assert.equal(p.reliability["empty-catch"], 2);
+    assert.equal(p.reliability["swallowed-error-log-only"], 1);
+    assert.equal(p.performance["await-in-loop"], 2);
   });
 });
