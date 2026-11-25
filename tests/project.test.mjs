@@ -154,7 +154,11 @@ describe("collect", () => {
     const root = repo({ "src/a.ts": "export {};\n" });
     cpSync(join(PLUGIN, "skills/audit/collect.mjs"), join(root, "scripts/audit/collect.mjs"), { recursive: true });
     cpSync(join(PLUGIN, "skills/audit/lib"), join(root, "scripts/audit/lib"), { recursive: true });
-    const r = spawnSync(process.execPath, ["scripts/audit/collect.mjs", ".", "--offline", "--no-tests", "--gate"], { cwd: root, encoding: "utf8" });
+    // A clean gitleaks, so the result doesn't depend on whether this machine has the real one.
+    const binDir = join(root, "fake-path");
+    fakeBin(binDir, "gitleaks", `while [ "$1" != "--report-path" ]; do shift; done; echo '[]' > "$2"; exit 0`);
+    const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}` };
+    const r = spawnSync(process.execPath, ["scripts/audit/collect.mjs", ".", "--offline", "--no-tests", "--gate"], { cwd: root, encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /GATE PASSED/);
   });

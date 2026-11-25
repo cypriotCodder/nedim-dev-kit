@@ -1562,7 +1562,7 @@ describe("collect: PR 10 (what its review found)", () => {
 
   // Found in PR 10's review, older than it: in an app inside a monorepo, `git diff` lists the whole
   // repo with repo-root paths while ls-files lists the app with app paths.
-  test("changes since the last audit use project-relative paths in a monorepo app", { todo: "PR 12" }, () => {
+  test("changes since the last audit use project-relative paths in a monorepo app", () => {
     const top = repo({ "apps/web/src/a.ts": "export {};\n", "apps/api/src/b.ts": "export {};\n" });
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: top, encoding: "utf8" }).stdout.trim();
     const web = join(top, "apps", "web");
@@ -1572,5 +1572,49 @@ describe("collect: PR 10 (what its review found)", () => {
     gitCommitAll(top);
     const changed = collect(web).raw("changed-since-last.txt").split("\n");
     assert.deepEqual(changed, ["docs/audits/latest.json", "src/a.ts"]);
+  });
+
+  // Same cause: `git log --name-only` gives repo-root paths, so no app file ever matched a line count.
+  test("churn hotspots are found in a monorepo app, and only for its own files", () => {
+    const top = repo({ "apps/web/src/a.ts": "export {};\n", "apps/api/src/a.ts": "export {};\n" });
+    write(top, "apps/web/src/a.ts", "export const a = 1;\n");
+    write(top, "apps/api/src/a.ts", "export const a = 1;\n");
+    gitCommitAll(top);
+    assert.deepEqual(collect(join(top, "apps", "web")).summary.metrics.hotspots, ["2 commits × 2 lines  src/a.ts"]);
+  });
+});
+
+// PR 10's review: a secret word repeated many times (minified code, a base64 blob) made each secret-name
+// pattern backtrack quadratically, about 3 seconds per pass for "token" × 20000. The same went for many
+// tight assignments before a call. The old code took 18 s or more for each case here, the new about 1 s,
+// nearly all of it the collector's own start-up, so the limit leaves room for a slow CI runner.
+// The last two only go through redaction: in source they'd also hit the pattern rules tested below.
+describe("collect: secret names in a long run of word characters", () => {
+  for (const [word, n, inSource] of [["token", 40000, true], ["TOKEN", 40000, true], ["token_", 40000, true], ["secret", 40000, true], ["e.token=t,", 60000, false], ["token=", 80000, false]]) {
+    test(`"${word}" × ${n} is ${inSource ? "scanned and " : ""}redacted in linear time`, () => {
+      const blob = word.repeat(n);
+      const root = repo({ "tsconfig.json": "{}\n", "src/a.ts": inSource ? `export const a = "${blob}";\n` : "export {};\n" });
+      fakeLocalBin(root, "tsc", `echo "src/a.ts(1,1): error TS2322: ${blob}f() authToken=hunter22"; exit 2`);
+      const t0 = Date.now();
+      const r = collect(root);
+      assert.ok(Date.now() - t0 < 8000, `took ${Date.now() - t0} ms`);
+      assert.doesNotMatch(r.raw("typecheck.txt"), /hunter22/);
+    });
+  }
+  test("a name that only ends in a secret word is still redacted whole", () => {
+    const r = collect(repo({ "src/a.ts": `const dbPassword = "abcdefghijklmnop1234";\nconsole.log(MY_API_TOKEN=hunter22);\n` }));
+    const evidence = r.raw("patterns.txt");
+    assert.doesNotMatch(evidence, /abcdefghijklmnop1234|hunter22/);
+    assert.match(evidence, /const dbPassword = "\[redacted\]/);
+    assert.match(evidence, /console\.log\(MY_API_TOKEN=\[redacted\]/);
+  });
+
+  // Found in PR 12's review: four pattern rules have the same `start .* end` shape, so a line that
+  // repeats the start without the end is rescanned from each repeat. Each line alone takes 1–6 s.
+  test("pattern rules scan a long minified line in linear time", { todo: "PR 13" }, () => {
+    const lines = ["Math.random()", "for (const x of y{", "readFile(", "NEXT_PUBLIC_A"].map((s) => `export const a = "${s.repeat(12000)}";`);
+    const t0 = Date.now();
+    collect(repo({ "src/a.ts": `${lines.join("\n")}\n` }));
+    assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
   });
 });

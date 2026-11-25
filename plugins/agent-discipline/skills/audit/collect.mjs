@@ -594,7 +594,8 @@ tool("hotspots", () => {
   const big = Object.entries(lineCounts).filter(([f]) => !isTest(f)).sort((a, b) => b[1] - a[1]);
   summary.metrics.largeFiles = { over400: big.filter(([, n]) => n > 400).length, over800: big.filter(([, n]) => n > 800).length, top: big.slice(0, 12).map(([f, n]) => `${n}  ${f}`) };
   if (!isGit) return doesntApply("not a git repo");
-  const log = run("git", ["log", "-z", "--since=6 months ago", "--name-only", "--format="]).stdout.split("\0").map((f) => f.trim()).filter(Boolean);
+  // --relative and the pathspec keep a monorepo app to its own files, named as the line counts name them.
+  const log = run("git", ["log", "-z", "--relative", "--since=6 months ago", "--name-only", "--format=", "--", ...NOT_AUDIT_OUTPUT]).stdout.split("\0").map((f) => f.trim()).filter(Boolean);
   const churn = {}; for (const f of log) if (lineCounts[f]) churn[f] = (churn[f] || 0) + 1;
   const hot = Object.entries(churn).map(([f, c]) => [f, c, lineCounts[f], c * lineCounts[f]]).sort((a, b) => b[3] - a[3]).slice(0, 15);
   summary.metrics.hotspots = hot.map(([f, c, n]) => `${c} commits × ${n} lines  ${f}`);
@@ -619,7 +620,8 @@ tool("sinceLast", () => {
   // From a file in the repo and about to reach git as an argument, so it must look like a SHA.
   if (!/^[0-9a-f]{7,64}$/.test(base.commit)) return { status: "failed", reason: `${baselineArg} has an invalid commit` };
   if (run("git", ["cat-file", "-e", `${base.commit}^{commit}`]).code !== 0) return { status: "failed", reason: `commit ${base.commit.slice(0, 8)} isn't in this repo's history` };
-  const diff = run("git", ["diff", "--name-only", "--no-renames", "-z", base.commit]);
+  // In a monorepo app, plain `git diff` lists the whole repo with repo-root paths, unlike ls-files.
+  const diff = run("git", ["diff", "--relative", "--name-only", "--no-renames", "-z", base.commit, "--", ...NOT_AUDIT_OUTPUT]);
   const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ...NOT_AUDIT_OUTPUT]);
   if (diff.code !== 0 || untracked.code !== 0) return { status: "failed", reason: "git couldn't list the changes" };
   const changed = [...new Set([...diff.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean))].sort();
