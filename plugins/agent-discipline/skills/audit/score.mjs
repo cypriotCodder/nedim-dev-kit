@@ -216,6 +216,9 @@ const identity = (f) => `${f.rule}|${fileOf(f.location || f.file || "")}${titleI
 const claim = (f) => unclaimed.get(identity(f))?.shift()
   || (f.reclassifiedFrom ? unclaimed.get(identity({ ...f, rule: f.reclassifiedFrom }))?.shift() : undefined);
 
+// A closed entry says whether it counted when it dropped out; one written before that was recorded did.
+const countedEntry = (f) => f.status !== "possible" && f.counted !== false;
+
 // The appendix too: a finding the verifier only called possible keeps its id for when it counts again.
 const previousEntries = [...(previous?.findings || []), ...(previous?.appendix || []), ...(previous?.closed || [])].filter((f) => f.id);
 const unclaimed = new Map();
@@ -339,7 +342,7 @@ function compare() {
   const present = new Set([...results, ...appendix].map((f) => f.id));
   const before = previous.findings || [];
   const wasOpen = (f) => f.status !== "fixed" && f.status !== "gone";
-  const wasCounted = (f) => f && f.status !== "possible";
+  const wasCounted = (f) => f && countedEntry(f);
   // Not found again isn't the same as fixed: the problem may have moved, or nobody looked closely.
   const absent = before.filter((f) => wasOpen(f) && !present.has(f.id)).map((f) => f.id);
   // fix-findings marks these with a test to prove it, so they're fixed whatever this run looked at.
@@ -355,7 +358,7 @@ function compare() {
     return n > 0;
   });
   for (const f of appendix) if (!f.previous) take(f);
-  const promoted = new Set(results.filter((f) => f.previous ? f.previous.status === "possible" : take(f)));
+  const promoted = new Set(results.filter((f) => f.previous ? !wasCounted(f.previous) : take(f)));
   const wasPossible = (f) => promoted.has(f);
   const deltas = {};
   for (const c of scored) {
@@ -370,7 +373,8 @@ function compare() {
     stillOpen: results.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
     // Reopened means a recorded fix didn't hold. Back from gone, there was no fix to undo.
     reopened: results.filter((f) => f.previous?.status === "fixed").map((f) => f.id),
-    returned: results.filter((f) => f.previous?.status === "gone").map((f) => f.id),
+    // One that dropped out while only possible was never reported gone, so it's promoted instead.
+    returned: results.filter((f) => f.previous?.status === "gone" && wasCounted(f.previous)).map((f) => f.id),
     downgraded: appendix.filter((f) => wasCounted(f.previous) && wasOpen(f.previous)).map((f) => f.id),
     fixed: markedFixed,
     gone: rechecked ? absent : [],
@@ -425,9 +429,13 @@ writeAtomic(join(dirname(inputPath), "score.json"), `${JSON.stringify(output, nu
 if (isFull) {
   const presentIds = new Set([...results, ...appendix].map((f) => f.id));
   // Kept so a problem that comes back gets its old id, and no id is ever given to something else.
+  // `counted` keeps what the trend last said about it, so its return is labelled from that.
   const closed = previousEntries
     .filter((f) => !presentIds.has(f.id))
-    .map((f) => ({ id: f.id, rule: f.rule, file: f.file || fileOf(f.location || ""), title: f.title, status: f.status === "fixed" ? "fixed" : "gone" }));
+    .map((f) => ({
+      id: f.id, rule: f.rule, file: f.file || fileOf(f.location || ""), title: f.title,
+      status: f.status === "fixed" ? "fixed" : "gone", counted: countedEntry(f),
+    }));
   writeAtomic(join(auditDir, "latest.json"), `${JSON.stringify({
     date, commit: output.commit, uncommittedFiles: output.uncommittedFiles, rubricVersion: RUBRIC, mode,
     overall, grade, scores: categories, counts, findings: output.findings, appendix: output.appendix, strengths, closed, reclassified,

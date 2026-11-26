@@ -639,6 +639,30 @@ describe("score: finding ids and the trend", () => {
       assert.deepEqual(c.promoted, ["SEC-001"]);
       assert.deepEqual(c.new, []);
     });
+
+    // It dropped out of the appendix, which no audit reports as gone, so the last thing the trend
+    // said about it was "possible". Coming back counted is a promotion, not a return.
+    test("that dropped out while in the appendix and comes back counted is promoted, not returned", () => {
+      const root = project();
+      run(root, "confirmed");
+      run(root, "possible");
+      score(root); // drops out while only possible
+      assert.deepEqual(latest(root).closed.map(({ id, counted }) => ({ id, counted })), [{ id: "SEC-001", counted: false }]);
+      const { comparison: c, findings } = run(root, "confirmed");
+      assert.equal(findings[0].id, "SEC-001");
+      assert.deepEqual(c.promoted, ["SEC-001"]);
+      assert.deepEqual(c.returned, []);
+      assert.deepEqual(c.new, []);
+    });
+
+    test("a closed entry written before `counted` was recorded still counts as counted", () => {
+      const root = project();
+      write(root, "docs/audits/latest.json", JSON.stringify({ rubricVersion: 2, date: "2026-10-01", findings: [], closed: [{ id: "SEC-004", rule: "xss", file: "src/a.ts", title: "t", status: "gone" }] }));
+      const { comparison: c, findings } = run(root, "confirmed");
+      assert.equal(findings[0].id, "SEC-004");
+      assert.deepEqual(c.returned, ["SEC-004"]);
+      assert.deepEqual(c.promoted, []);
+    });
   });
 
   test("a partial audit doesn't call what it skipped fixed", () => {
