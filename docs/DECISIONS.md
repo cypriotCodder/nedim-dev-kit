@@ -4,6 +4,13 @@ Newest at the top. Each entry is short and permanent. To change a decision, add 
 
 ---
 
+## ADR-022: Closed entries record whether the finding counted  (2026-11-26, status: accepted)
+
+**Context:** The gap ADR-021 left. A finding only gets an id once it has counted, so the real case is a finding that counted, was downgraded to the appendix, and then dropped out. `comparison.gone` only looks at counted findings, so that drop-out was never reported. The trend last called it possible. But `closed` saved it as `gone` like any other, so when it came back counted it was reported as `returned` ("back after it was gone"), not `promoted`.
+**Decision:** Each `closed` entry has `counted`: false when the finding was only in the appendix when it dropped out, true otherwise. It's carried over unchanged while the entry stays closed. `compare()` treats a closed entry with `counted: false` like an appendix finding, so it comes back as `promoted`. A missing `counted` means true, so `closed` entries in older baselines keep the labels they have now.
+**Alternatives:** A third closed status such as `gone-possible` (every reader of `status` would have to learn it, and it mixes up what happened with what was shown). Reporting the drop-out as `gone` when it happens (that tells people a problem left when it was never confirmed in the first place).
+**Consequences:** Plugin 1.8.1. `rules.json` is unchanged, so the rubric stays at 2. `latest.json` gets a new field, but no existing field changes meaning. `collect.mjs` and `lib/` only changed their version stamp, so CI gate copies should be copied again to keep doctor quiet.
+
 ## ADR-021: Reopened only means a recorded fix didn't hold  (2026-11-25, status: accepted)
 
 **Context:** Left open in PR 11's review. `compare()` put every counted finding whose previous entry wasn't open into `reopened`. When a full audit writes `closed`, every status but `fixed` becomes `gone`. So a finding that dropped out with no fix recorded, then came back, was reported as a fix that didn't hold. A test even asserted this, under the name "a fixed problem that returns". This is the same mislabel ADR-018 removed from `fixed`: the trend claimed work that nobody did.
